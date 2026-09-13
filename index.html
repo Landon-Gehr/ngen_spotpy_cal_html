@@ -1,0 +1,1961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Basin Calibration Explorer</title>
+<script src="plotly.min.js"></script>
+<script src="node_modules/@ngageoint/geopackage/dist/geopackage.min.js"></script>
+<style>
+  /* ============================================================
+     TOKENS
+     ============================================================ */
+  :root{
+    --bg:        #EDEFE9;
+    --panel:     #E1E5DC;
+    --panel-2:   #D7DCCF;
+    --ink:       #202B26;
+    --ink-soft:  #5B665F;
+    --line:      #C7CDBF;
+    --line-soft: #D9DED2;
+    --water:     #1C6E78;
+    --water-deep:#123F46;
+    --contour:   #5F7A3D;
+    --alert:     #A6432B;
+    --amber:     #B9862E;
+    --focus:     #1C6E78;
+
+    --font-ui:   -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --font-data: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+
+    --rail-w: 76px;
+    --drawer-w: 300px;
+    --header-h: 52px;
+    --status-h: 28px;
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    font-family: var(--font-ui);
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  button{ font-family: inherit; }
+  ::selection{ background: var(--water); color:#fff; }
+
+  :focus-visible{
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+
+  /* ============================================================
+     APP GRID
+     ============================================================ */
+  .app{
+    display: grid;
+    grid-template-columns: var(--rail-w) 1fr var(--drawer-w);
+    grid-template-rows: var(--header-h) 1fr var(--status-h);
+    grid-template-areas:
+      "header header header"
+      "rail   main    drawer"
+      "rail   status  status";
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+  }
+
+  /* ---------- header ---------- */
+  .header{
+    grid-area: header;
+    display:flex;
+    align-items:center;
+    gap: 14px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .header .mark{
+    width: 20px; height: 20px;
+    border: 2px solid var(--water);
+    border-radius: 2px;
+    position: relative;
+    flex: none;
+  }
+  .header .mark::after{
+    content:"";
+    position:absolute;
+    left: 4px; top: 4px;
+    width: 6px; height: 6px;
+    background: var(--water);
+  }
+  .header h1{
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    margin: 0;
+    white-space: nowrap;
+  }
+  .header .subtitle{
+    color: var(--ink-soft);
+    font-size: 12.5px;
+    border-left: 1px solid var(--line);
+    padding-left: 14px;
+    margin-left: 2px;
+  }
+  .header .breadcrumb{
+    margin-left: auto;
+    display:flex;
+    align-items:center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .basin-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding: 4px 10px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    font-family: var(--font-data);
+    font-size: 12px;
+    color: var(--ink);
+  }
+  .basin-chip .dot{
+    width:7px; height:7px; border-radius:50%;
+    background: var(--ink-soft);
+    flex: none;
+  }
+
+  /* ---------- nav rail ---------- */
+  .rail{
+    grid-area: rail;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    display:flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding-top: 6px;
+  }
+  .rail-btn{
+    display:flex;
+    flex-direction: column;
+    align-items:center;
+    gap: 5px;
+    padding: 10px 4px 12px;
+    background: none;
+    border: none;
+    border-left: 3px solid transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.15;
+  }
+  .rail-btn svg{ width:20px; height:20px; }
+  .rail-btn:hover{ background: var(--panel-2); color: var(--ink); }
+  .rail-btn.active{
+    color: var(--water-deep);
+    border-left-color: var(--water);
+    background: var(--bg);
+  }
+  .rail-spacer{ flex:1; }
+  .rail-foot{
+    padding: 10px 8px 14px;
+    text-align:center;
+    color: var(--ink-soft);
+    font-size: 10px;
+    font-family: var(--font-data);
+    border-top: 1px solid var(--line-soft);
+  }
+
+  /* ---------- main canvas area ---------- */
+  .main{
+    grid-area: main;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  .tab-panel{
+    display:none;
+    height: 100%;
+    width: 100%;
+  }
+  .tab-panel.active{ display:block; }
+
+  .canvas-frame{
+    position:absolute;
+    inset: 16px;
+    border: 1px solid var(--line);
+    background: #E7E9E2;
+  }
+  .chart-div{
+    position:absolute;
+    inset: 0;
+  }
+  .canvas-empty{
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+  }
+  .canvas-empty .inner{ color: var(--ink-soft); max-width: 360px; padding: 24px; }
+  .canvas-empty .step{
+    display:inline-block;
+    font-family: var(--font-data);
+    font-size: 11px;
+    color: var(--water-deep);
+    background: rgba(28,110,120,0.09);
+    border: 1px solid rgba(28,110,120,0.25);
+    padding: 2px 8px;
+    border-radius: 2px;
+    margin-bottom: 12px;
+  }
+  .canvas-empty p{ margin: 0 0 6px; font-size: 13px; line-height:1.5; }
+  .canvas-empty p.small{ font-size: 11.5px; color: var(--ink-soft); }
+
+  .timeseries-chart{
+    position:absolute;
+    inset:0;
+    display:none;
+  }
+
+  /* small instructional / info overlay on map tabs */
+  .map-overlay{
+    position:absolute;
+    left: 24px; bottom: 24px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    padding: 9px 12px;
+    font-size: 11.5px;
+    max-width: 230px;
+    z-index: 5;
+    pointer-events: none;
+  }
+  .map-overlay h4{
+    margin: 0 0 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
+  .map-overlay .row{ display:flex; justify-content: space-between; gap: 10px; font-family: var(--font-data); font-size:11px; padding: 2px 0; }
+  .map-overlay .row .k{ color: var(--ink-soft); }
+
+  /* ---------- control drawer ---------- */
+  .drawer{
+    grid-area: drawer;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    overflow-y: auto;
+    padding: 18px 16px 24px;
+  }
+  .drawer-group{ margin-bottom: 24px; }
+  .drawer-group h3{
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    margin: 0 0 10px;
+  }
+  .drawer-group .hint{
+    font-size: 11px;
+    color: var(--ink-soft);
+    margin: 6px 0 0;
+    line-height: 1.45;
+  }
+
+  .btn-group{
+    display:flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .btn-group.stack{ flex-direction: column; }
+  .opt-btn{
+    padding: 7px 11px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 12.5px;
+    transition: background 0.12s ease, border-color 0.12s ease;
+  }
+  .opt-btn:hover{ border-color: var(--water); }
+  .opt-btn.active{
+    background: var(--water);
+    border-color: var(--water);
+    color: #fff;
+  }
+
+  select.field, .basin-select{
+    width: 100%;
+    padding: 7px 9px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    color: var(--ink);
+    font-size: 12.5px;
+    font-family: inherit;
+  }
+
+  .check-row{
+    display:flex;
+    align-items:center;
+    gap: 8px;
+    font-size: 12.5px;
+    padding: 5px 0;
+    color: var(--ink);
+  }
+  .check-row input{ accent-color: var(--water); width:14px; height:14px; }
+
+  /* sliders */
+  .slider-block{ margin-bottom: 16px; }
+  .slider-label-row{
+    display:flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .slider-label-row .name{ font-size: 12.5px; color: var(--ink); }
+  .slider-label-row .val{
+    font-family: var(--font-data);
+    font-size: 11.5px;
+    color: var(--water-deep);
+  }
+  input[type="range"]{
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--line);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb{
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--water);
+    border: 2px solid var(--bg);
+    box-shadow: 0 0 0 1px var(--water);
+    cursor: pointer;
+    margin-top: -5px;
+  }
+  input[type="range"]::-moz-range-thumb{
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--water);
+    border: 2px solid var(--bg);
+    box-shadow: 0 0 0 1px var(--water);
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-runnable-track{ height:4px; border-radius:2px; }
+
+  .range-ticks{
+    display:flex;
+    justify-content: space-between;
+    font-family: var(--font-data);
+    font-size: 9.5px;
+    color: var(--ink-soft);
+    margin-top: 4px;
+  }
+
+  /* dual range */
+  .dual-range{
+    position: relative;
+    height: 30px;
+  }
+  .dual-range input[type=range]{
+    position:absolute;
+    left:0; right:0; top: 8px;
+    pointer-events: none;
+    background: none;
+  }
+  .dual-range input[type=range]::-webkit-slider-thumb{ pointer-events: all; }
+  .dual-range input[type=range]::-moz-range-thumb{ pointer-events: all; }
+  .dual-range .track{
+    position:absolute;
+    left:0; right:0; top: 8px;
+    height:4px;
+    background: var(--line);
+    border-radius: 2px;
+  }
+  .dual-range .track-fill{
+    position:absolute;
+    top:8px;
+    height:4px;
+    background: var(--water);
+    border-radius: 2px;
+  }
+
+  .basin-list{
+    max-height: 230px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    margin-top: 8px;
+  }
+  .basin-list-item{
+    width:100%; box-sizing:border-box;
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:7px 9px;
+    border:0; border-bottom:1px solid var(--line-soft);
+    background:transparent; color:var(--ink);
+    text-align:left; cursor:pointer;
+    font-family:var(--font-data); font-size:10.5px;
+  }
+  .basin-list-item:last-child{ border-bottom:none; }
+  .basin-list-item:hover{ background:var(--line-soft); }
+  .basin-list-item.active{ background:var(--water-pale); box-shadow:inset 3px 0 0 var(--water); }
+  .basin-list-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .basin-list-gage{ color:var(--ink-soft); flex:0 0 auto; }
+
+  /* metrics readout */
+  .metrics-readout{
+    border: 1px solid var(--line);
+    background: var(--bg);
+    padding: 10px 12px;
+  }
+  .metric-line{
+    display:flex;
+    justify-content: space-between;
+    font-family: var(--font-data);
+    font-size: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .metric-line:last-child{ border-bottom:none; }
+  .metric-line .k{ color: var(--ink-soft); }
+  .metric-line .v{ color: var(--ink); }
+
+
+  .date-range-title{ margin-bottom:7px; }
+  .date-range-row{
+    display:flex; align-items:center; gap:7px;
+    margin:4px 0;
+    font-family:var(--font-data);
+    font-size:11px;
+  }
+  .date-range-row .date-label{ width:34px; color:var(--ink-soft); flex:0 0 34px; }
+  .date-range-row input{
+    width:178px; box-sizing:border-box;
+    padding:3px 4px;
+    border:1px solid var(--line);
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--font-data);
+    font-size:10px;
+  }
+  .resolution-fields{
+    display:grid;
+    grid-template-columns:repeat(5, minmax(0, 1fr));
+    gap:5px;
+    margin-top:6px;
+  }
+  .resolution-field{
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+  }
+  .resolution-fields label{
+    display:flex;
+    align-items:center;
+    gap:2px;
+    color:var(--ink-soft);
+    font-family:var(--font-data);
+    font-size:9px;
+  }
+  .resolution-fields input{
+    width:100%; box-sizing:border-box;
+    min-width:0;
+    padding:4px 3px;
+    border:1px solid var(--line);
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--font-data);
+    font-size:10px;
+  }
+  .resolution-duration{
+    margin-top:4px;
+    color:var(--ink-soft);
+    font-family:var(--font-data);
+    font-size:9px;
+  }
+
+  .divider{ height:1px; background: var(--line-soft); margin: 18px 0; }
+
+  /* ---------- status bar ---------- */
+  .status{
+    grid-area: status;
+    border-top: 1px solid var(--line);
+    display:flex;
+    align-items:center;
+    padding: 0 16px;
+    gap: 20px;
+    font-family: var(--font-data);
+    font-size: 11px;
+    color: var(--ink-soft);
+    background: var(--bg);
+  }
+  .status span.tag{ color: var(--water-deep); }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ================= HEADER ================= -->
+  <div class="header">
+    <div class="mark"></div>
+    <h1>Basin Calibration Explorer</h1>
+    <span class="subtitle">NextGen / t-route calibration review</span>
+    <div class="breadcrumb">
+      <span>Selected basin:</span>
+      <span class="basin-chip" id="headerBasinChip">
+        <span class="dot" id="headerBasinDot"></span>
+        <span id="headerBasinLabel">none selected</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- ================= NAV RAIL ================= -->
+  <div class="rail">
+    <button class="rail-btn active" data-tab="tab-overview">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/></svg>
+      Map
+    </button>
+    <button class="rail-btn" data-tab="tab-basin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 20 9 8l4 6 3-4 5 10Z"/><circle cx="9" cy="8" r="1.4" fill="currentColor" stroke="none"/></svg>
+      Basin
+    </button>
+    <button class="rail-btn" data-tab="tab-timeseries">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 17 8 10l4 4 5-7 4 5"/><path d="M3 21h18"/></svg>
+      Flow
+    </button>
+    <div class="rail-spacer"></div>
+    <div class="rail-foot">v0.2<br>maps live</div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+
+    <!-- TAB 1: US overview map -->
+    <div class="tab-panel active" id="tab-overview">
+      <div class="canvas-frame">
+        <div id="overviewChart" class="chart-div"></div>
+      </div>
+      <div class="map-overlay">
+        <h4>Basins</h4>
+        <div class="row"><span class="k">loaded</span><span id="overviewLoadedCount">0 / 0</span></div>
+        <div class="row"><span class="k">click a point</span><span>selects it</span></div>
+      </div>
+    </div>
+
+    <!-- TAB 2: basin detail map -->
+    <div class="tab-panel" id="tab-basin">
+      <div class="canvas-frame">
+        <div id="basinChart" class="chart-div" style="display:none"></div>
+        <div class="canvas-empty" id="basinEmptyState">
+          <div class="inner">
+            <p>No basin selected. Choose one from the drawer, or click a point on the Map tab.</p>
+          </div>
+        </div>
+      </div>
+      <div class="map-overlay" id="basinInfoPanel" style="display:none">
+        <h4>Selected basin</h4>
+        <div class="row"><span class="k">name</span><span id="biName">—</span></div>
+        <div class="row"><span class="k">gage</span><span id="biGage">—</span></div>
+        <div class="row"><span class="k">lat, lon</span><span id="biLatLon">—</span></div>
+        <div class="row"><span class="k">hovered item</span><span id="basinHoveredItem">None</span></div>
+        <div class="row"><span class="k">mouse coordinates</span><span id="basinMouseCoords">None</span></div>
+      </div>
+    </div>
+
+    <!-- TAB 3: timeseries -->
+    <div class="tab-panel" id="tab-timeseries">
+      <div class="canvas-frame" id="tsCanvas">
+        <div id="timeseriesChart" class="timeseries-chart"></div>
+        <div class="canvas-empty" id="timeseriesEmptyState">
+          <div class="inner">
+            <p>No basin selected. Choose one from the drawer, or click a point on the Map tab.</p>
+            <p class="small">Select a basin to load its observed and simulated 15-minute streamflow.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= DRAWER (contextual controls) ================= -->
+  <div class="drawer">
+
+    <!-- --- overview controls --- -->
+    <div id="drawer-overview">
+      <div class="drawer-group">
+        <h3>Score metric</h3>
+        <div class="btn-group" id="metricGroup">
+          <button class="opt-btn active" data-metric="NSE">NSE</button>
+          <button class="opt-btn" data-metric="KGE">KGE</button>
+          <button class="opt-btn" data-metric="PBIAS">PBIAS</button>
+          <button class="opt-btn" data-metric="RMSE">RMSE</button>
+        </div>
+        <p class="hint">Recolors each basin point by its calibration score for the chosen metric. Colorbar on the map updates to match.</p>
+      </div>
+
+      <div class="drawer-group">
+        <h3>Basemap</h3>
+        <div class="btn-group" id="basemapGroupOverview">
+          <button class="opt-btn active" data-basemap="outline">Outline</button>
+          <button class="opt-btn" data-basemap="satellite">Satellite</button>
+        </div>
+        <p class="hint" id="basemapHintOverview">Outline and Satellite use Plotly's built-in MapLibre basemap styles.</p>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="drawer-group">
+        <h3>Basins</h3>
+        <p class="hint">Select a basin from the map or list.</p>
+        <div class="basin-list" id="basinList" role="listbox" aria-label="Basins"></div>
+      </div>
+    </div>
+
+    <!-- --- basin detail controls --- -->
+    <div id="drawer-basin" style="display:none">
+      <div class="drawer-group">
+        <h3>Basin</h3>
+        <select class="basin-select" id="basinSelect">
+          <option value="">Select a basin…</option>
+        </select>
+      </div>
+
+      <div class="drawer-group">
+        <h3>Basemap</h3>
+        <div class="btn-group" id="basemapGroupBasin">
+          <button class="opt-btn active" data-basemap="outline">Outline</button>
+          <button class="opt-btn" data-basemap="satellite">Satellite</button>
+        </div>
+      </div>
+
+      <div class="drawer-group">
+        <h3>Layers</h3>
+        <label class="check-row"><input type="checkbox" checked data-layer="catchments"> Catchments</label>
+        <label class="check-row"><input type="checkbox" checked data-layer="flowpaths"> Flowpaths</label>
+        <label class="check-row"><input type="checkbox" checked data-layer="nexus"> Nexus points</label>
+        <label class="check-row"><input type="checkbox" checked data-layer="gage"> Gage location</label>
+      </div>
+
+      <div class="drawer-group">
+        <h3>Color scheme</h3>
+        <div class="btn-group" id="basinColorSchemeGroup">
+          <button class="opt-btn active" data-color-scheme="default">Default</button>
+          <button class="opt-btn" data-color-scheme="highContrast">High contrast</button>
+          <button class="opt-btn" data-color-scheme="dark">Dark</button>
+        </div>
+        <p class="hint" id="gpkgStatus">Select a basin to load its GPKG geometry.</p>
+      </div>
+    </div>
+
+    <!-- --- timeseries controls --- -->
+    <div id="drawer-timeseries" style="display:none">
+      <div class="drawer-group">
+        <h3>Basin</h3>
+        <select class="basin-select" id="basinSelectTs">
+          <option value="">Select a basin…</option>
+        </select>
+      </div>
+
+      <div class="drawer-group">
+        <h3>Units</h3>
+        <div class="btn-group" id="unitGroup">
+          <button class="opt-btn active" data-unit="cms">m&sup3;/s</button>
+          <button class="opt-btn" data-unit="cfs">ft&sup3;/s</button>
+        </div>
+      </div>
+
+      <div class="drawer-group">
+        <h3>Aggregation function</h3>
+        <select class="field" id="aggSelect">
+          <option value="mean">Mean</option>
+          <option value="min">Min</option>
+          <option value="max">Max</option>
+          <option value="sum">Sum</option>
+        </select>
+        <p class="hint">Used whenever the resolution below is coarser than the native 15-minute timestep.</p>
+      </div>
+
+      <div class="drawer-group slider-block">
+        <div class="slider-label-row">
+          <span class="name">Time resolution</span>
+        </div>
+        <div class="resolution-fields" aria-label="Custom aggregation duration">
+            <label><input class="resolution-part" id="resolutionYears" type="number" min="0" step="1" value="0"><span>yr</span></label>
+            <label><input class="resolution-part" id="resolutionMonths" type="number" min="0" max="11" step="1" value="0"><span>mo</span></label>
+            <label><input class="resolution-part" id="resolutionDays" type="number" min="0" max="31" step="1" value="0"><span>d</span></label>
+            <label><input class="resolution-part" id="resolutionHours" type="number" min="0" max="23" step="1" value="0"><span>h</span></label>
+            <label><input class="resolution-part" id="resolutionMinutes" type="number" min="0" max="59" step="1" value="15"><span>min</span></label>
+          </div>
+        <div class="resolution-duration" id="resolutionDurationLabel">15 min</div>
+        <input type="range" id="resolutionSlider" min="0" max="5" step="1" value="0">
+        <div class="range-ticks">
+          <span>15m</span><span>hr</span><span>day</span><span>wk</span><span>mo</span><span>yr</span>
+        </div>
+      </div>
+
+      <div class="drawer-group">
+        <div class="name date-range-title">Date range</div>
+        <div class="date-range-row">
+          <span class="date-label">Start:</span>
+          <input type="datetime-local" id="dateStartValue" aria-label="Start date and time" step="1">
+        </div>
+        <div class="date-range-row">
+          <span class="date-label">Stop:</span>
+          <input type="datetime-local" id="dateEndValue" aria-label="Stop date and time" step="1">
+        </div>
+        <div class="dual-range">
+          <div class="track"></div>
+          <div class="track-fill" id="dateTrackFill"></div>
+          <input type="range" id="dateStart" min="0" max="100" value="0">
+          <input type="range" id="dateEnd" min="0" max="100" value="100">
+        </div>
+        <p class="hint">Bounded by the shorter of the observed record and the simulated record for this basin.</p>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="drawer-group">
+        <h3>Metrics at current settings</h3>
+        <div class="metrics-readout">
+          <div class="metric-line"><span class="k">NSE</span><span class="v">—</span></div>
+          <div class="metric-line"><span class="k">KGE</span><span class="v">—</span></div>
+          <div class="metric-line"><span class="k">PBIAS</span><span class="v">—</span></div>
+          <div class="metric-line"><span class="k">RMSE</span><span class="v">—</span></div>
+        </div>
+        <p class="hint">Recomputed from the observed and simulated data currently inside the selected date window.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= STATUS BAR ================= -->
+  <div class="status">
+    <span>tab: <span class="tag" id="statusTab">overview</span></span>
+    <span>basins loaded: <span class="tag" id="statusLoadedCount">0 / 0</span></span>
+    <span>basemap: <span class="tag">Plotly native</span></span>
+  </div>
+
+</div>
+
+<script>
+/* ==================================================================
+   STATE
+   ================================================================== */
+const state = {
+  tab: 'overview',
+  metric: 'NSE',
+  basemapOverview: 'outline',
+  basemapBasin: 'outline',
+  basinColorScheme: 'default',
+  unit: 'cms',
+  agg: 'mean',
+  resolutionStepIndex: 0,
+  resolutionMs: 15 * 60 * 1000,
+  resolutionDuration: { years: 0, months: 0, days: 0, hours: 0, minutes: 15, seconds: 0 },
+  dateStartPct: 0,
+  dateEndPct: 100,
+  dateStartMs: null,
+  dateEndMs: null,
+  selectedBasin: null,   // gage_no
+};
+
+const RESOLUTION_STEPS = ['15 min', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'];
+const RESOLUTION_ANCHOR = new Date(0, 0, 1, 0, 0, 0, 0);
+RESOLUTION_ANCHOR.setFullYear(0);
+
+/* ==================================================================
+   REAL BASIN LOCATIONS — from gage_locs.csv
+   ================================================================== */
+let BASINS = [];
+
+// Loaded on demand for the currently selected basin. The data is kept in
+// memory so switching back to a basin does not require another fetch.
+const TIMESERIES_CACHE = new Map();
+const GPKG_CACHE = new Map();
+let basinLayerVisibility = { catchments: true, flowpaths: true, nexus: true };
+let timeseriesInitialized = false;
+
+
+/* ==================================================================
+   BASIN METADATA — loaded from gage_locs.csv
+   ================================================================== */
+function parseCSV(text){
+  const rows = [];
+  let row = [], field = '', quoted = false;
+
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    const next = text[i + 1];
+
+    if (quoted){
+      if (c === '"' && next === '"'){
+        field += '"';
+        i++;
+      } else if (c === '"'){
+        quoted = false;
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"'){
+        quoted = true;
+      } else if (c === ','){
+        row.push(field);
+        field = '';
+      } else if (c === '\n'){
+        row.push(field.replace(/\r$/, ''));
+        rows.push(row);
+        row = [];
+        field = '';
+      } else {
+        field += c;
+      }
+    }
+  }
+
+  if (field.length || row.length){
+    row.push(field.replace(/\r$/, ''));
+    rows.push(row);
+  }
+
+  if (!rows.length) return [];
+
+  const headers = rows[0].map(h => h.trim());
+  return rows.slice(1)
+    .filter(r => r.some(v => v.trim() !== ''))
+    .map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] ?? '').trim()])));
+}
+
+async function loadBasins(){
+  const response = await fetch('gage_locs.csv', { cache: 'no-store' });
+  if (!response.ok){
+    throw new Error(`Could not load gage_locs.csv (${response.status})`);
+  }
+
+  const records = parseCSV(await response.text());
+
+  BASINS = records.map(r => ({
+    gage: r.Gage_no,
+    name: r.Gage_name,
+    lat: Number(r.Lat_nwis),
+    lon: Number(r.Long_nwis),
+    flowpath: r.flowpath_id,
+    divide: r.divide_id,
+    scores: {
+      NSE: Number(r.NSE),
+      KGE: Number(r.KGE),
+      PBIAS: Number(r.PBIAS),
+      RMSE: Number(r.RMSE),
+    }
+  }));
+
+  const invalid = BASINS.filter(b =>
+    !b.gage || !b.name ||
+    !Number.isFinite(b.lat) || !Number.isFinite(b.lon) ||
+    METRICS.some(m => !Number.isFinite(b.scores[m]))
+  );
+
+  if (invalid.length){
+    console.warn('Ignoring malformed basin rows:', invalid);
+    BASINS = BASINS.filter(b => !invalid.includes(b));
+  }
+
+  populateBasinSelects();
+  populateBasinList();
+  updateLoadedCounts();
+  renderOverviewMap();
+  renderBasinMap();
+}
+
+function metricValues(metric){
+  return BASINS.map(b => b.scores[metric]);
+}
+
+function metricColorSpec(metric){
+  const values = metricValues(metric);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+
+  // PBIAS and RMSE are better when smaller in magnitude / value respectively.
+  // The colorbar still displays the real metric values.
+  return {
+    cmin: min,
+    cmax: max || min + 1,
+    reversescale: metric === 'RMSE',
+  };
+}
+
+const METRICS = ['NSE', 'KGE', 'PBIAS', 'RMSE'];
+
+/* ==================================================================
+   PLOTLY TILE MAPS
+   The overview and basin maps use Plotly's MapLibre-backed scattermap
+   traces so the basemap can be changed at runtime.
+   ================================================================== */
+
+/* ==================================================================
+   COLOR SCALE
+   ================================================================== */
+const SCORE_COLORSCALE = [
+  [0,    '#E4572E'],
+  [0.5,  '#F3C623'],
+  [1,    '#2E9F5B'],
+];
+
+/* ==================================================================
+   OVERVIEW MAP
+   ================================================================== */
+let overviewInitialized = false;
+
+function overviewTrace(){
+  const values = metricValues(state.metric);
+  const sizes = BASINS.map(b => state.selectedBasin === b.gage ? 20 : 17);
+  const pointSizes = BASINS.map(b => state.selectedBasin === b.gage ? 14 : 12);
+  const base = {
+    lon: BASINS.map(b => b.lon),
+    lat: BASINS.map(b => b.lat),
+    mode: 'markers',
+    type: 'scattermap',
+    hoverinfo: 'skip',
+    showlegend: false,
+    marker: { size: sizes, color: '#000000', symbol: 'circle', opacity: 1 }
+  };
+  const points = {
+    lon: BASINS.map(b => b.lon),
+    lat: BASINS.map(b => b.lat),
+    mode: 'markers',
+    type: 'scattermap',
+    text: BASINS.map(b =>
+      `${b.name}<br>Gage ${b.gage}<br>${state.metric}: ${b.scores[state.metric]}`
+    ),
+    hoverinfo: 'text',
+    showlegend: false,
+    marker: {
+      size: pointSizes,
+      line: { width: 0, color: '#000000' },
+      color: values,
+      colorscale: SCORE_COLORSCALE,
+      ...metricColorSpec(state.metric),
+      colorbar: {
+        title: { text: state.metric, side: 'right' },
+        thickness: 14,
+        len: 0.55,
+        tickfont: { size: 10 }
+      }
+    }
+  };
+  return [base, points];
+}
+
+function mapStyleForBasemap(style){
+  if (style === 'satellite') return 'satellite';
+  // Keep Outline as the neutral built-in street/context map.
+  return 'basic';
+}
+
+function overviewLayout(){
+  return {
+    margin: { l: 0, r: 0, t: 0, b: 0 },
+    map: {
+      style: mapStyleForBasemap(state.basemapOverview),
+      center: { lon: -98.5, lat: 38.5 },
+      zoom: 3.1
+    },
+    hoverlabel: {
+      bgcolor: '#202B26',
+      font: { color: '#fff', family: 'ui-monospace, monospace', size: 11 }
+    },
+    paper_bgcolor: 'rgba(0,0,0,0)'
+  };
+}
+
+function renderOverviewMap(){
+  const div = document.getElementById('overviewChart');
+
+  if (!BASINS.length) return;
+
+  if (!overviewInitialized){
+    Plotly.newPlot(
+      div,
+      [...overviewTrace()],
+      overviewLayout(),
+      { displayModeBar: false, responsive: true }
+    );
+
+    div.on('plotly_click', (evt) => {
+      if (!evt.points || !evt.points.length) return;
+      const gage = BASINS[evt.points[0].pointIndex].gage;
+      selectBasin(gage);
+    });
+
+    overviewInitialized = true;
+  } else {
+    Plotly.react(
+      div,
+      [...overviewTrace()],
+      overviewLayout(),
+      { displayModeBar: false, responsive: true }
+    );
+  }
+}
+
+/* ==================================================================
+   BASIN DETAIL MAP
+   Uses the same Plotly MapLibre tile map, centered/zoomed on the basin.
+   The future GPKG geometry layers can be added as GeoJSON traces/layers.
+   ================================================================== */
+let basinInitialized = false;
+
+async function loadGpkgLayers(gage){
+  if (GPKG_CACHE.has(gage)) return GPKG_CACHE.get(gage);
+  if (!window.GeoPackage) throw new Error('GeoPackage JS is not loaded. Run: npm install @ngageoint/geopackage');
+
+  // GeoPackage JS uses sql.js/WASM in the browser.
+  if (window.GeoPackage.setSqljsWasmLocateFile) {
+    window.GeoPackage.setSqljsWasmLocateFile(file => `node_modules/@ngageoint/geopackage/dist/${file}`);
+  }
+  const response = await fetch(`gpkgs/gage-${gage}.gpkg`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Could not load gpkgs/gage-${gage}.gpkg (${response.status})`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const gp = await window.GeoPackage.GeoPackageAPI.open(bytes);
+
+  const out = {};
+  for (const table of ['divides', 'flowpaths', 'nexus']) {
+    if (!gp.hasFeatureTable || !gp.hasFeatureTable(table)) continue;
+    const result = gp.queryForGeoJSONFeaturesInTable(table);
+    const features = [];
+    for (const feature of result) features.push(feature);
+    if (result.close) result.close();
+    out[table] = { type: 'FeatureCollection', features };
+  }
+  gp.close();
+  GPKG_CACHE.set(gage, out);
+  return out;
+}
+
+function featureId(feature, fallback){
+  const p = feature && feature.properties ? feature.properties : {};
+  const preferred = ['id','ID','divide_id','flowpath_id','nexus_id','link','link_id','feature_id','comid','hydrolocation_id'];
+  for (const key of preferred) {
+    if (p[key] !== undefined && p[key] !== null && String(p[key]) !== '') return String(p[key]);
+  }
+  return String(fallback);
+}
+
+const BASIN_COLOR_SCHEMES = {
+  default: { catchmentFill: 'rgba(46, 159, 91, 0.24)', catchmentLine: '#176B45', flowpath: '#176B87', nexus: '#7B2CBF', gage: '#E4572E' },
+  highContrast: { catchmentFill: 'rgba(255, 193, 7, 0.28)', catchmentLine: '#8A4B00', flowpath: '#0057B8', nexus: '#D0006F', gage: '#00A878' },
+  dark: { catchmentFill: 'rgba(0, 0, 0, 0.18)', catchmentLine: '#111111', flowpath: '#00B8D9', nexus: '#FF4FD8', gage: '#FFD23F' }
+};
+
+function basinColors(){ return BASIN_COLOR_SCHEMES[state.basinColorScheme] || BASIN_COLOR_SCHEMES.default; }
+
+function geometryToSegments(geometry){
+  if (!geometry) return [];
+  const coords = geometry.coordinates;
+  if (geometry.type === 'LineString') return [coords];
+  if (geometry.type === 'MultiLineString') return coords;
+  if (geometry.type === 'Polygon') return coords;
+  if (geometry.type === 'MultiPolygon') return coords.flat(1);
+  return [];
+}
+
+function polygonTrace(feature, index){
+  const segments = geometryToSegments(feature.geometry);
+  const lon = [], lat = [];
+  segments.forEach(ring => {
+    ring.forEach(([x,y]) => { lon.push(x); lat.push(y); });
+    lon.push(null); lat.push(null);
+  });
+  const id = featureId(feature, index);
+  return {
+    type: 'scattermap', mode: 'lines', lon, lat,
+    name: `Catchment ${id}`,
+    text: Array(lon.length).fill(`Catchment ID: ${id}`), hoverinfo: 'text',
+    line: { width: 2, color: basinColors().catchmentLine },
+    fill: 'toself', fillcolor: basinColors().catchmentFill,
+    connectgaps: false, hoveron: 'fills'
+  };
+}
+
+function lineTrace(feature, index){
+  const segments = geometryToSegments(feature.geometry);
+  const lon = [], lat = [];
+  segments.forEach(line => {
+    line.forEach(([x,y]) => { lon.push(x); lat.push(y); });
+    lon.push(null); lat.push(null);
+  });
+  const id = featureId(feature, index);
+  return {
+    type: 'scattermap', mode: 'lines', lon, lat,
+    name: `Flowpath ${id}`,
+    text: Array(lon.length).fill(`Flowpath ID: ${id}`), hoverinfo: 'text',
+    line: { width: 3, color: basinColors().flowpath }, connectgaps: false
+  };
+}
+
+function pointTrace(feature, index){
+  const id = featureId(feature, index);
+  const c = feature.geometry && feature.geometry.coordinates;
+  if (!c) return null;
+  return {
+    type: 'scattermap', mode: 'markers', lon: [c[0]], lat: [c[1]],
+    name: `Nexus ${id}`, text: [`Nexus ID: ${id}`], hoverinfo: 'text',
+    marker: { size: 10, color: basinColors().nexus, line: { width: 2, color: '#000000' } }
+  };
+}
+
+function gageTrace(basin){
+  return {
+    type: 'scattermap',
+    mode: 'markers',
+    lon: [basin.lon],
+    lat: [basin.lat],
+    name: `Gage ${basin.gage}`,
+    text: [`Gage ${basin.gage}<br>${basin.name}`],
+    hoverinfo: 'text',
+    marker: { size: 21, color: basinColors().gage, line: { width: 3, color: '#000000' } },
+    showlegend: false
+  };
+}
+
+async function renderBasinMap(){
+  const basin = BASINS.find(b => b.gage === state.selectedBasin);
+  const chartDiv = document.getElementById('basinChart');
+  const emptyDiv = document.getElementById('basinEmptyState');
+  const infoPanel = document.getElementById('basinInfoPanel');
+  const status = document.getElementById('gpkgStatus');
+
+  if (!basin){
+    chartDiv.style.display = 'none'; emptyDiv.style.display = 'flex'; infoPanel.style.display = 'none';
+    return;
+  }
+  emptyDiv.style.display = 'none'; chartDiv.style.display = 'block'; infoPanel.style.display = 'block';
+  document.getElementById('biName').textContent = basin.name;
+  document.getElementById('biGage').textContent = basin.gage;
+  document.getElementById('biLatLon').textContent = `${basin.lat.toFixed(4)}, ${basin.lon.toFixed(4)}`;
+
+  const traces = [];
+  // Keep an invisible anchor trace so the MapLibre basemap remains rendered even
+  // when every visible layer checkbox is unchecked.
+  traces.push({
+    type: 'scattermap', mode: 'markers', lon: [basin.lon], lat: [basin.lat],
+    marker: { size: 0.01, opacity: 0 }, hoverinfo: 'skip', showlegend: false
+  });
+  try {
+    const layers = await loadGpkgLayers(basin.gage);
+    if (basinLayerVisibility.catchments && layers.divides) {
+      layers.divides.features.forEach((f,i) => traces.push(polygonTrace(f,i)));
+    }
+    if (basinLayerVisibility.flowpaths && layers.flowpaths) {
+      layers.flowpaths.features.forEach((f,i) => traces.push(lineTrace(f,i)));
+    }
+    if (basinLayerVisibility.nexus && layers.nexus) {
+      layers.nexus.features.forEach((f,i) => { const t = pointTrace(f,i); if (t) traces.push(t); });
+    }
+    // Always add the gage last so it is the top-most layer.
+    if (basinLayerVisibility.gage) traces.push(gageTrace(basin));
+    status.textContent = `GPKG loaded: ${Object.entries(layers).map(([k,v]) => `${k} ${v.features.length}`).join(' · ')}`;
+  } catch (err) {
+    console.error(err);
+    status.textContent = `GPKG: ${err.message}`;
+  }
+  // The gage is independent of the GPKG and remains visible even when the file
+  // is missing or fails to load. It is deliberately added last (top layer).
+  if (basinLayerVisibility.gage && !traces.some(t => t.name === `Gage ${basin.gage}`)) {
+    traces.push(gageTrace(basin));
+  }
+
+  const layout = {
+    margin: { l: 0, r: 0, t: 0, b: 0 },
+    map: { style: mapStyleForBasemap(state.basemapBasin), center: { lon: basin.lon, lat: basin.lat }, zoom: 10 },
+    hoverlabel: { bgcolor: '#202B26', font: { color: '#fff', family: 'ui-monospace, monospace', size: 11 } },
+    paper_bgcolor: 'rgba(0,0,0,0)', showlegend: false
+  };
+  if (!basinInitialized) {
+    Plotly.newPlot(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+    chartDiv.on('plotly_hover', updateBasinHoverInfo);
+    chartDiv.on('plotly_unhover', clearBasinHoverInfo);
+    basinInitialized = true;
+  } else {
+    Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+  }
+}
+
+function updateBasinHoverInfo(evt){
+  const p = evt && evt.points && evt.points[0];
+  const item = document.getElementById('basinHoveredItem');
+  const coords = document.getElementById('basinMouseCoords');
+  if (!p) return;
+  let label = 'None';
+  if (p.data && p.data.name) label = p.data.name;
+  else if (p.text) label = String(p.text).replace(/<br>/g, ' ');
+  item.textContent = label;
+  if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) {
+    coords.textContent = `${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)}`;
+  } else {
+    coords.textContent = 'None';
+  }
+}
+
+function clearBasinHoverInfo(){
+  document.getElementById('basinHoveredItem').textContent = 'None';
+  document.getElementById('basinMouseCoords').textContent = 'None';
+}
+
+/* ==================================================================
+   TAB SWITCHING
+   ================================================================== */
+function setTab(tabId){
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === tabId));
+  document.querySelectorAll('.rail-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
+
+  const short = tabId.replace('tab-', '');
+  state.tab = short;
+  document.getElementById('statusTab').textContent = short;
+
+  document.getElementById('drawer-overview').style.display   = short === 'overview'   ? '' : 'none';
+  document.getElementById('drawer-basin').style.display      = short === 'basin'      ? '' : 'none';
+  document.getElementById('drawer-timeseries').style.display = short === 'timeseries' ? '' : 'none';
+
+  // Plotly needs a resize nudge after its container goes from display:none -> visible
+  requestAnimationFrame(() => {
+    if (short === 'overview' && overviewInitialized) Plotly.Plots.resize('overviewChart');
+    if (short === 'basin' && basinInitialized) Plotly.Plots.resize('basinChart');
+    if (short === 'timeseries' && timeseriesInitialized) Plotly.Plots.resize('timeseriesChart');
+  });
+}
+
+document.querySelectorAll('.rail-btn').forEach(btn => {
+  btn.addEventListener('click', () => setTab(btn.dataset.tab));
+});
+
+/* ==================================================================
+   GENERIC BUTTON-GROUP TOGGLE (metric, basemap, unit)
+   ================================================================== */
+function wireButtonGroup(groupEl, onSelect){
+  if (!groupEl) return;
+  groupEl.querySelectorAll('.opt-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      groupEl.querySelectorAll('.opt-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      onSelect(btn);
+    });
+  });
+}
+
+wireButtonGroup(document.getElementById('metricGroup'), (btn) => {
+  state.metric = btn.dataset.metric;
+  renderOverviewMap();
+
+  // Keep the Flow-tab metric readout in sync with the selected score metric.
+  const data = state.selectedBasin ? TIMESERIES_CACHE.get(state.selectedBasin) : null;
+  if (data) updateDynamicMetrics(data);
+});
+
+function selectBasemap(groupEl, stateKey, btn, renderFn){
+  state[stateKey] = btn.dataset.basemap;
+  renderFn();
+}
+
+wireButtonGroup(document.getElementById('basemapGroupOverview'), (btn) => {
+  selectBasemap(
+    document.getElementById('basemapGroupOverview'),
+    'basemapOverview',
+    btn,
+    renderOverviewMap
+  );
+});
+
+wireButtonGroup(document.getElementById('basemapGroupBasin'), (btn) => {
+  selectBasemap(
+    document.getElementById('basemapGroupBasin'),
+    'basemapBasin',
+    btn,
+    renderBasinMap
+  );
+});
+
+document.querySelectorAll('[data-layer]').forEach(input => {
+  input.addEventListener('change', () => {
+    basinLayerVisibility[input.dataset.layer] = input.checked;
+    if (state.selectedBasin) renderBasinMap();
+  });
+});
+
+wireButtonGroup(document.getElementById('basinColorSchemeGroup'), (btn) => {
+  state.basinColorScheme = btn.dataset.colorScheme;
+  if (state.selectedBasin) renderBasinMap();
+});
+
+wireButtonGroup(document.getElementById('unitGroup'), (btn) => {
+  state.unit = btn.dataset.unit;
+  const data = state.selectedBasin ? TIMESERIES_CACHE.get(state.selectedBasin) : null;
+  const basin = state.selectedBasin && BASINS.find(b => b.gage === state.selectedBasin);
+  if (data && basin) renderTimeseries(data, basin);
+});
+
+document.getElementById('aggSelect').addEventListener('change', (e) => {
+  state.agg = e.target.value;
+  const data = state.selectedBasin ? TIMESERIES_CACHE.get(state.selectedBasin) : null;
+  const basin = state.selectedBasin && BASINS.find(b => b.gage === state.selectedBasin);
+  if (data && basin) renderTimeseries(data, basin);
+});
+
+/* ==================================================================
+   BASIN SELECT DROPDOWNS (populated from BASINS) + map click linking
+   ================================================================== */
+function populateBasinSelects(){
+  const selects = [
+    document.getElementById('basinSelect'),
+    document.getElementById('basinSelectTs')
+  ];
+
+  selects.forEach(sel => {
+    sel.querySelectorAll('option:not([value=""])').forEach(o => o.remove());
+
+    BASINS.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.gage;
+      opt.textContent = `${b.name} (${b.gage})`;
+      sel.appendChild(opt);
+    });
+
+    if (!sel.dataset.wired){
+      sel.addEventListener('change', (e) => selectBasin(e.target.value));
+      sel.dataset.wired = 'true';
+    }
+  });
+}
+
+function populateBasinList(){
+  const list = document.getElementById('basinList');
+  if (!list) return;
+  list.innerHTML = '';
+  BASINS.forEach(b => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'basin-list-item';
+    item.dataset.gage = b.gage;
+    item.setAttribute('role', 'option');
+    item.innerHTML = `<span class="basin-list-name">${escapeHtml(b.name)}</span><span class="basin-list-gage">${escapeHtml(b.gage)}</span>`;
+    item.addEventListener('click', () => selectBasin(b.gage));
+    list.appendChild(item);
+  });
+  updateBasinListSelection();
+}
+
+function updateBasinListSelection(){
+  const list = document.getElementById('basinList');
+  if (!list) return;
+  list.querySelectorAll('.basin-list-item').forEach(item => {
+    const selected = item.dataset.gage === state.selectedBasin;
+    item.classList.toggle('active', selected);
+    item.setAttribute('aria-selected', selected ? 'true' : 'false');
+    if (selected) item.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function escapeHtml(value){
+  return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+
+function updateLoadedCounts(){
+  const count = BASINS.length;
+  const total = document.getElementById('overviewLoadedCount');
+  const status = document.getElementById('statusLoadedCount');
+
+  if (total) total.textContent = `${count} / ${count}`;
+  if (status) status.textContent = `${count} / ${count}`;
+}
+
+function selectBasin(gage){
+  state.selectedBasin = gage || null;
+  const basin = BASINS.find(b => b.gage === gage);
+
+  document.getElementById('headerBasinLabel').textContent = basin ? basin.name : 'none selected';
+  document.getElementById('headerBasinDot').style.background = basin ? 'var(--water)' : 'var(--ink-soft)';
+
+  document.getElementById('basinSelect').value = gage || '';
+  document.getElementById('basinSelectTs').value = gage || '';
+  updateBasinListSelection();
+
+  renderOverviewMap();  // refresh selection highlight ring
+  renderBasinMap();     // load the zoomed box for the new basin
+
+  loadAndRenderTimeseries();
+}
+
+/* ==================================================================
+   FLOW / TIMESERIES
+   Load the selected gage's observed and simulated CSVs.
+   Both files use: timestamp,flow_m3s
+   Resolution, date range, units, and metrics remain unchanged for now;
+   those controls will be wired in the following steps.
+   ================================================================== */
+function parseTimeseriesCSV(text){
+  const records = parseCSV(text);
+
+  return records
+    .map(r => ({
+      timestamp: r.timestamp,
+      flow_m3s: Number(r.flow_m3s)
+    }))
+    .filter(r => r.timestamp && Number.isFinite(r.flow_m3s));
+}
+
+async function loadTimeseriesForGage(gage){
+  if (TIMESERIES_CACHE.has(gage)){
+    return TIMESERIES_CACHE.get(gage);
+  }
+
+  const fileName = `gage-${gage}.csv`;
+  const observedPath = `synthetic_data/observed/${fileName}`;
+  const simulatedPath = `synthetic_data/simulated/${fileName}`;
+
+  const [observedResponse, simulatedResponse] = await Promise.all([
+    fetch(observedPath, { cache: 'no-store' }),
+    fetch(simulatedPath, { cache: 'no-store' })
+  ]);
+
+  if (!observedResponse.ok){
+    throw new Error(`Could not load observed/${fileName} (${observedResponse.status})`);
+  }
+  if (!simulatedResponse.ok){
+    throw new Error(`Could not load simulated/${fileName} (${simulatedResponse.status})`);
+  }
+
+  const [observedText, simulatedText] = await Promise.all([
+    observedResponse.text(),
+    simulatedResponse.text()
+  ]);
+
+  const data = {
+    observed: parseTimeseriesCSV(observedText),
+    simulated: parseTimeseriesCSV(simulatedText)
+  };
+
+  if (!data.observed.length){
+    throw new Error(`Observed file ${fileName} contains no valid timestamp/flow_m3s rows.`);
+  }
+  if (!data.simulated.length){
+    throw new Error(`Simulated file ${fileName} contains no valid timestamp/flow_m3s rows.`);
+  }
+
+  TIMESERIES_CACHE.set(gage, data);
+  return data;
+}
+
+function formatDateTimeLocal(ms){
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function commonDateBounds(data){
+  const allObserved = data.observed.map(d => Date.parse(d.timestamp)).filter(Number.isFinite);
+  const allSimulated = data.simulated.map(d => Date.parse(d.timestamp)).filter(Number.isFinite);
+  if (!allObserved.length || !allSimulated.length) return null;
+  return {
+    min: Math.max(Math.min(...allObserved), Math.min(...allSimulated)),
+    max: Math.min(Math.max(...allObserved), Math.max(...allSimulated))
+  };
+}
+
+function setDateRangeControls(data, reset = false){
+  const bounds = commonDateBounds(data);
+  if (!bounds || bounds.max < bounds.min) return;
+
+  if (reset || state.dateStartMs === null || state.dateEndMs === null ||
+      state.dateStartMs < bounds.min || state.dateStartMs > bounds.max ||
+      state.dateEndMs < bounds.min || state.dateEndMs > bounds.max ||
+      state.dateStartMs > state.dateEndMs){
+    state.dateStartMs = bounds.min;
+    state.dateEndMs = bounds.max;
+    state.dateStartPct = 0;
+    state.dateEndPct = 100;
+  }
+
+  dateStartValue.min = formatDateTimeLocal(bounds.min);
+  dateStartValue.max = formatDateTimeLocal(bounds.max);
+  dateEndValue.min = formatDateTimeLocal(bounds.min);
+  dateEndValue.max = formatDateTimeLocal(bounds.max);
+  dateStartValue.value = formatDateTimeLocal(state.dateStartMs);
+  dateEndValue.value = formatDateTimeLocal(state.dateEndMs);
+
+  const span = bounds.max - bounds.min || 1;
+  dateStart.value = Math.round((state.dateStartMs - bounds.min) / span * 1000);
+  dateEnd.value = Math.round((state.dateEndMs - bounds.min) / span * 1000);
+  dateStart.min = 0; dateStart.max = 1000;
+  dateEnd.min = 0; dateEnd.max = 1000;
+  updateDateTrack(false);
+}
+
+function unitScale(){
+  return state.unit === 'cfs' ? 35.3146667215 : 1;
+}
+
+function flowUnitLabel(){
+  return state.unit === 'cfs' ? 'ft³/s' : 'm³/s';
+}
+
+function roundTimestamp(timestampMs){
+  const d = new Date(timestampMs);
+  const r = state.resolutionDuration;
+
+  // Calendar-aware rounding when the duration is expressed only in years/months.
+  // This keeps monthly/yearly buckets aligned to calendar boundaries.
+  if (r.days === 0 && r.hours === 0 && r.minutes === 0 && r.seconds === 0 && (r.years || r.months)){
+    const stepMonths = r.years * 12 + r.months;
+    const monthIndex = d.getFullYear() * 12 + d.getMonth();
+    const anchorIndex = RESOLUTION_ANCHOR.getFullYear() * 12 + RESOLUTION_ANCHOR.getMonth();
+    const relative = monthIndex - anchorIndex;
+    const lower = Math.floor(relative / stepMonths) * stepMonths + anchorIndex;
+    const upper = lower + stepMonths;
+    const lowerDate = new Date(Math.floor(lower / 12), lower % 12, 1).getTime();
+    const upperDate = new Date(Math.floor(upper / 12), upper % 12, 1).getTime();
+    return (timestampMs - lowerDate) < (upperDate - timestampMs) ? lowerDate : upperDate;
+  }
+
+  // For sub-monthly or mixed durations, use the duration in milliseconds.
+  const interval = state.resolutionMs;
+  if (!Number.isFinite(interval) || interval <= 0) return timestampMs;
+  return Math.round(timestampMs / interval) * interval;
+}
+
+function aggregateSeries(rows, start, end){
+  const groups = new Map();
+  const scale = unitScale();
+
+  rows.forEach(d => {
+    const t = Date.parse(d.timestamp);
+    const v = Number(d.flow_m3s);
+    if (!Number.isFinite(t) || !Number.isFinite(v) || t < start || t > end) return;
+
+    const bucket = roundTimestamp(t);
+    if (!groups.has(bucket)) groups.set(bucket, []);
+    groups.get(bucket).push(v * scale);
+  });
+
+  return [...groups.entries()]
+    .sort((a,b) => a[0] - b[0])
+    .map(([t, values]) => {
+      let value;
+      if (state.agg === 'min') value = Math.min(...values);
+      else if (state.agg === 'max') value = Math.max(...values);
+      else if (state.agg === 'sum') value = values.reduce((a,b) => a+b, 0);
+      else value = values.reduce((a,b) => a+b, 0) / values.length;
+      return { t, value };
+    });
+}
+
+function aggregatePairedData(data){
+  const start = state.dateStartMs;
+  const end = state.dateEndMs;
+  if (start === null || end === null) return { observed: [], simulated: [] };
+  return {
+    observed: aggregateSeries(data.observed, start, end),
+    simulated: aggregateSeries(data.simulated, start, end)
+  };
+}
+
+function renderTimeseries(data, basin){
+  const chartDiv = document.getElementById('timeseriesChart');
+  const emptyDiv = document.getElementById('timeseriesEmptyState');
+
+  chartDiv.style.display = 'block';
+  emptyDiv.style.display = 'none';
+
+  const aggregated = aggregatePairedData(data);
+  const unit = flowUnitLabel();
+  const traces = [
+    {
+      x: aggregated.observed.map(d => new Date(d.t)),
+      y: aggregated.observed.map(d => d.value),
+      mode: 'lines',
+      type: 'scattergl',
+      name: 'Observed',
+      line: { width: 2.0, dash: 'solid' },
+      hovertemplate: `Observed<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
+    },
+    {
+      x: aggregated.simulated.map(d => new Date(d.t)),
+      y: aggregated.simulated.map(d => d.value),
+      mode: 'lines',
+      type: 'scattergl',
+      name: 'Simulated',
+      line: { width: 1.25, dash: 'dash' },
+      hovertemplate: `Simulated<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
+    }
+  ];
+
+  const layout = {
+    margin: { l: 65, r: 20, t: 45, b: 55 },
+    title: {
+      text: `${basin.name} — Gage ${basin.gage}`,
+      x: 0.02,
+      xanchor: 'left',
+      font: { size: 14 }
+    },
+    xaxis: {
+      title: 'Time',
+      type: 'date',
+      gridcolor: '#D9DED2',
+      range: state.dateStartMs !== null && state.dateEndMs !== null
+        ? [new Date(state.dateStartMs), new Date(state.dateEndMs)]
+        : undefined
+    },
+    yaxis: {
+      title: `Flow (${unit})`,
+      gridcolor: '#D9DED2',
+      rangemode: 'tozero'
+    },
+    legend: {
+      orientation: 'h',
+      x: 1,
+      xanchor: 'right',
+      y: 1.08,
+      yanchor: 'bottom'
+    },
+    hovermode: 'x unified',
+    plot_bgcolor: '#E7E9E2',
+    paper_bgcolor: 'rgba(0,0,0,0)'
+  };
+
+  if (!timeseriesInitialized){
+    Plotly.newPlot(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+    timeseriesInitialized = true;
+  } else {
+    Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+  }
+  updateDynamicMetrics(data, aggregated);
+}
+
+async function loadAndRenderTimeseries(){
+  const chartDiv = document.getElementById('timeseriesChart');
+  const emptyDiv = document.getElementById('timeseriesEmptyState');
+
+  if (!state.selectedBasin){
+    chartDiv.style.display = 'none';
+    emptyDiv.style.display = 'flex';
+    return;
+  }
+
+  const basin = BASINS.find(b => b.gage === state.selectedBasin);
+  if (!basin) return;
+
+  chartDiv.style.display = 'block';
+  emptyDiv.style.display = 'none';
+
+  try {
+    const data = await loadTimeseriesForGage(basin.gage);
+
+    // The user can change the selected basin while the files are loading.
+    // Do not draw stale data over the newly selected basin.
+    if (state.selectedBasin !== basin.gage) return;
+
+    setDateRangeControls(data, true);
+    renderTimeseries(data, basin);
+  } catch (err) {
+    console.error(err);
+    chartDiv.style.display = 'none';
+    emptyDiv.style.display = 'flex';
+    emptyDiv.innerHTML = `
+      <div class="inner">
+        <p style="color:#A6432B">Failed to load streamflow data.</p>
+        <p class="small">${err.message}</p>
+      </div>`;
+  }
+}
+
+/* ==================================================================
+   RESOLUTION — slider presets + datetime duration input
+   Custom resolution is entered as separate calendar-duration fields
+   (years, months, days, hours, minutes).
+   ================================================================== */
+const resolutionSlider = document.getElementById('resolutionSlider');
+const resolutionDurationLabel = document.getElementById('resolutionDurationLabel');
+const resolutionFields = {
+  years: document.getElementById('resolutionYears'),
+  months: document.getElementById('resolutionMonths'),
+  days: document.getElementById('resolutionDays'),
+  hours: document.getElementById('resolutionHours'),
+  minutes: document.getElementById('resolutionMinutes')
+};
+
+function normalizeDuration(r){
+  return {
+    years: Math.max(0, Math.trunc(Number(r.years) || 0)),
+    months: Math.max(0, Math.trunc(Number(r.months) || 0)),
+    days: Math.max(0, Math.trunc(Number(r.days) || 0)),
+    hours: Math.max(0, Math.trunc(Number(r.hours) || 0)),
+    minutes: Math.max(0, Math.trunc(Number(r.minutes) || 0)),
+    seconds: 0
+  };
+}
+
+function readResolutionFields(){
+  const r = normalizeDuration(Object.fromEntries(Object.entries(resolutionFields).map(([k,e]) => [k,e.value])));
+  if (r.months > 11 || r.days > 31 || r.hours > 23 || r.minutes > 59) return null;
+  let totalMs = durationToMs(r);
+  const minimumMs = 15 * 60 * 1000;
+  if (!Number.isFinite(totalMs) || totalMs <= 0) return null;
+  if (totalMs < minimumMs) {
+    const minimum = { years: 0, months: 0, days: 0, hours: 0, minutes: 15, seconds: 0 };
+    writeResolutionFields(minimum);
+    totalMs = minimumMs;
+    return { ...minimum, totalMs };
+  }
+  return { ...r, totalMs };
+}
+
+function writeResolutionFields(r){
+  const n = normalizeDuration(r);
+  Object.entries(resolutionFields).forEach(([k,e]) => e.value = n[k]);
+}
+
+function durationLabel(r){
+  const parts=[];
+  if(r.years) parts.push(`${r.years}y`); if(r.months) parts.push(`${r.months}mo`);
+  if(r.days) parts.push(`${r.days}d`); if(r.hours) parts.push(`${r.hours}h`); if(r.minutes) parts.push(`${r.minutes}m`);
+  return parts.join(' ') || '—';
+}
+
+function resolutionStepDuration(index){
+  switch(Number(index)){
+    case 0: return {years:0,months:0,days:0,hours:0,minutes:15,seconds:0};
+    case 1: return {years:0,months:0,days:0,hours:1,minutes:0,seconds:0};
+    case 2: return {years:0,months:0,days:1,hours:0,minutes:0,seconds:0};
+    case 3: return {years:0,months:0,days:7,hours:0,minutes:0,seconds:0};
+    case 4: return {years:0,months:1,days:0,hours:0,minutes:0,seconds:0};
+    case 5: return {years:1,months:0,days:0,hours:0,minutes:0,seconds:0};
+    default: return {years:0,months:0,days:0,hours:0,minutes:15,seconds:0};
+  }
+}
+
+function durationToMs(r){
+  const d = new Date(RESOLUTION_ANCHOR);
+  d.setFullYear(d.getFullYear()+r.years); d.setMonth(d.getMonth()+r.months); d.setDate(d.getDate()+r.days);
+  d.setHours(d.getHours()+r.hours); d.setMinutes(d.getMinutes()+r.minutes);
+  return d.getTime()-RESOLUTION_ANCHOR.getTime();
+}
+
+function nearestResolutionStep(totalMs){
+  let best=0, dist=Infinity;
+  RESOLUTION_STEPS.forEach((_,i)=>{ const d=Math.abs(totalMs-durationToMs(resolutionStepDuration(i))); if(d<dist){dist=d;best=i;} });
+  return best;
+}
+
+function refreshResolutionPlot(){
+  const data=state.selectedBasin?TIMESERIES_CACHE.get(state.selectedBasin):null;
+  const basin=state.selectedBasin&&BASINS.find(b=>b.gage===state.selectedBasin);
+  if(data&&basin) renderTimeseries(data,basin);
+}
+
+function applyResolution(index){
+  state.resolutionStepIndex=Number(index);
+  state.resolutionDuration=resolutionStepDuration(state.resolutionStepIndex);
+  state.resolutionMs=durationToMs(state.resolutionDuration);
+  resolutionSlider.value=state.resolutionStepIndex;
+  writeResolutionFields(state.resolutionDuration);
+  resolutionDurationLabel.textContent=durationLabel(state.resolutionDuration);
+  refreshResolutionPlot();
+}
+
+resolutionSlider.addEventListener('input',()=>applyResolution(resolutionSlider.value));
+Object.values(resolutionFields).forEach(input=>input.addEventListener('change',()=>{
+  const duration=readResolutionFields();
+  if(!duration){ writeResolutionFields(state.resolutionDuration); return; }
+  state.resolutionDuration=duration;
+  state.resolutionMs=duration.totalMs;
+  state.resolutionStepIndex=nearestResolutionStep(duration.totalMs);
+  resolutionSlider.value=state.resolutionStepIndex;
+  resolutionDurationLabel.textContent=durationLabel(duration);
+  refreshResolutionPlot();
+}));
+
+/* ==================================================================
+   DATE RANGE — DUAL HANDLE SLIDER (percent-based placeholder)
+   ================================================================== */
+const dateStart = document.getElementById('dateStart');
+const dateEnd   = document.getElementById('dateEnd');
+const dateTrackFill = document.getElementById('dateTrackFill');
+const dateStartValue = document.getElementById('dateStartValue');
+const dateEndValue = document.getElementById('dateEndValue');
+
+function updateDateTrack(rerender = true){
+  let s = Number(dateStart.value);
+  let e = Number(dateEnd.value);
+  if (s > e){
+    if (document.activeElement === dateStart) s = e;
+    else e = s;
+  }
+
+  dateStart.value = s;
+  dateEnd.value = e;
+  dateTrackFill.style.left  = (s / 10) + '%';
+  dateTrackFill.style.width = ((e - s) / 10) + '%';
+  state.dateStartPct = s / 10;
+  state.dateEndPct = e / 10;
+
+  const basin = state.selectedBasin && BASINS.find(b => b.gage === state.selectedBasin);
+  const data = state.selectedBasin ? TIMESERIES_CACHE.get(state.selectedBasin) : null;
+  const bounds = data && commonDateBounds(data);
+  if (!bounds) return;
+
+  const span = bounds.max - bounds.min || 1;
+  state.dateStartMs = bounds.min + (s / 1000) * span;
+  state.dateEndMs = bounds.min + (e / 1000) * span;
+  dateStartValue.value = formatDateTimeLocal(state.dateStartMs);
+  dateEndValue.value = formatDateTimeLocal(state.dateEndMs);
+
+  if (rerender && basin) {
+    renderTimeseries(data, basin);
+    updateDynamicMetrics(data);
+  }
+}
+
+function setDateFromText(which){
+  const data = state.selectedBasin ? TIMESERIES_CACHE.get(state.selectedBasin) : null;
+  if (!data) return;
+  const bounds = commonDateBounds(data);
+  if (!bounds) return;
+
+  const input = which === 'start' ? dateStartValue : dateEndValue;
+  const parsed = Date.parse(input.value);
+  if (!Number.isFinite(parsed) || parsed < bounds.min || parsed > bounds.max) {
+    input.value = formatDateTimeLocal(which === 'start' ? state.dateStartMs : state.dateEndMs);
+    return;
+  }
+
+  if (which === 'start' && parsed > state.dateEndMs) {
+    input.value = formatDateTimeLocal(state.dateStartMs);
+    return;
+  }
+  if (which === 'end' && parsed < state.dateStartMs) {
+    input.value = formatDateTimeLocal(state.dateEndMs);
+    return;
+  }
+
+  const span = bounds.max - bounds.min || 1;
+  const pct = Math.round((parsed - bounds.min) / span * 1000);
+  if (which === 'start') dateStart.value = pct;
+  else dateEnd.value = pct;
+  updateDateTrack();
+}
+
+dateStart.addEventListener('input', () => updateDateTrack());
+dateEnd.addEventListener('input', () => updateDateTrack());
+dateStartValue.addEventListener('change', () => setDateFromText('start'));
+dateEndValue.addEventListener('change', () => setDateFromText('end'));
+
+/* ==================================================================
+   DYNAMIC METRICS — selected date window, native 15-minute data
+   ================================================================== */
+function pearsonCorrelation(a, b){
+  const n = a.length;
+  if (n < 2) return NaN;
+  const ma = a.reduce((x,y) => x+y, 0) / n;
+  const mb = b.reduce((x,y) => x+y, 0) / n;
+  let num = 0, da = 0, db = 0;
+  for (let i=0; i<n; i++){
+    const xa = a[i] - ma, xb = b[i] - mb;
+    num += xa * xb; da += xa * xa; db += xb * xb;
+  }
+  return (da > 0 && db > 0) ? num / Math.sqrt(da * db) : NaN;
+}
+
+function updateDynamicMetrics(data, aggregated = null){
+  const start = state.dateStartMs;
+  const end = state.dateEndMs;
+  if (start === null || end === null) return;
+
+  const pairs = [];
+  if (aggregated){
+    const simByTime = new Map(aggregated.simulated.map(d => [d.t, d.value]));
+    aggregated.observed.forEach(d => {
+      if (simByTime.has(d.t)) pairs.push([d.value, simByTime.get(d.t)]);
+    });
+  } else {
+    const observed = new Map();
+    data.observed.forEach(d => {
+      const t = Date.parse(d.timestamp);
+      const v = Number(d.flow_m3s);
+      if (Number.isFinite(t) && Number.isFinite(v) && t >= start && t <= end) observed.set(t, v);
+    });
+    data.simulated.forEach(d => {
+      const t = Date.parse(d.timestamp);
+      const v = Number(d.flow_m3s);
+      if (Number.isFinite(t) && Number.isFinite(v) && t >= start && t <= end && observed.has(t)) {
+        const scale = unitScale();
+        pairs.push([observed.get(t) * scale, v * scale]);
+      }
+    });
+  }
+
+  const el = document.querySelectorAll('.metric-line');
+  if (pairs.length < 2){
+    el.forEach(row => row.querySelector('.v').textContent = '—');
+    return;
+  }
+
+  const obs = pairs.map(p => p[0]);
+  const sim = pairs.map(p => p[1]);
+  const meanObs = obs.reduce((a,b) => a+b, 0) / obs.length;
+  const meanSim = sim.reduce((a,b) => a+b, 0) / sim.length;
+  const sse = obs.reduce((sum, o, i) => sum + (sim[i] - o) ** 2, 0);
+  const varianceObs = obs.reduce((sum, o) => sum + (o - meanObs) ** 2, 0);
+  const rmse = Math.sqrt(sse / obs.length);
+  const nse = varianceObs > 0 ? 1 - sse / varianceObs : NaN;
+  const r = pearsonCorrelation(obs, sim);
+  const sdObs = Math.sqrt(obs.reduce((sum,o) => sum + (o-meanObs)**2, 0) / obs.length);
+  const sdSim = Math.sqrt(sim.reduce((sum,x) => sum + (x-meanSim)**2, 0) / sim.length);
+  const alpha = sdObs > 0 ? sdSim / sdObs : NaN;
+  const beta = meanObs !== 0 ? meanSim / meanObs : NaN;
+  const kge = Number.isFinite(r) && Number.isFinite(alpha) && Number.isFinite(beta)
+    ? 1 - Math.sqrt((r-1)**2 + (alpha-1)**2 + (beta-1)**2) : NaN;
+  const obsSum = obs.reduce((sum,o) => sum + o, 0);
+  const simSum = sim.reduce((sum,x) => sum + x, 0);
+  const pbias = obsSum !== 0 ? 100 * (obsSum - simSum) / obsSum : NaN;
+
+  const values = { NSE: nse, KGE: kge, PBIAS: pbias, RMSE: rmse };
+  el.forEach(row => {
+    const metric = row.querySelector('.k').textContent.trim();
+    const value = values[metric];
+    row.querySelector('.v').textContent = Number.isFinite(value)
+      ? (metric === 'PBIAS' ? `${value.toFixed(3)}%` : value.toFixed(4))
+      : '—';
+    row.style.fontWeight = metric === state.metric ? '700' : '400';
+  });
+}
+
+/* ==================================================================
+   INIT
+   ================================================================== */
+updateDateTrack();
+setTab('tab-overview');
+
+loadBasins().catch(err => {
+  console.error(err);
+  document.getElementById('overviewChart').innerHTML =
+    `<div style="padding:24px;color:#A6432B;font-family:ui-monospace,monospace">
+       Failed to load gage_locs.csv.<br><br>${err.message}<br><br>
+       Serve this directory over HTTP (for example: <code>python3 -m http.server</code>)
+       rather than opening index.html directly as file://.
+     </div>`;
+});
+</script>
+</body>
+</html>
