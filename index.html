@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Basin Calibration Explorer</title>
 <script src="plotly.min.js"></script>
-<script src="node_modules/@ngageoint/geopackage/dist/geopackage.min.js"></script>
+<!--
+  Loaded from a CDN rather than a committed node_modules/ folder: most default
+  .gitignore templates exclude node_modules, so a locally-working copy can
+  silently fail to reach GitHub Pages. If you'd rather self-host this file,
+  make sure you `git add -f node_modules/@ngageoint/geopackage/dist/...` and
+  update the two paths below (script src + WASM_BASE_URL) to match.
+-->
+<script src="https://cdn.jsdelivr.net/npm/@ngageoint/geopackage/dist/geopackage.min.js"></script>
 <style>
   /* ============================================================
      TOKENS  (unchanged from the tabbed version)
@@ -248,6 +255,16 @@
     font-weight: 600;
     color: var(--ink-soft);
     margin: 0 0 10px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .count-badge{
+    font-family: var(--font-data);
+    font-weight: 400;
+    font-size: 10.5px;
+    color: var(--ink-soft);
   }
   .section-tag{
     display:inline-block;
@@ -489,7 +506,7 @@
 </head>
 <body>
 
-<div class="app" id="app">
+<div class="app sidebar-collapsed" id="app">
 
   <!-- ================= HEADER ================= -->
   <div class="header">
@@ -502,9 +519,9 @@
         <span class="dot" id="headerBasinDot"></span>
         <span id="headerBasinLabel">none selected</span>
       </span>
-      <button class="sidebar-toggle" id="sidebarToggle" aria-expanded="true" aria-controls="sidebar">
+      <button class="sidebar-toggle" id="sidebarToggle" aria-expanded="false" aria-controls="sidebar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M15 4v16"/></svg>
-        <span id="sidebarToggleLabel">Hide controls</span>
+        <span id="sidebarToggleLabel">Show controls</span>
       </button>
     </div>
   </div>
@@ -545,11 +562,6 @@
       <div class="panel-head">Basin overview — colored by score</div>
       <div class="panel-body">
         <div id="overviewChart" class="chart-div"></div>
-        <div class="map-overlay">
-          <h4>Basins</h4>
-          <div class="row"><span class="k">loaded</span><span id="overviewLoadedCount">0 / 0</span></div>
-          <div class="row"><span class="k">click a point</span><span>selects it</span></div>
-        </div>
       </div>
     </section>
 
@@ -583,10 +595,10 @@
 
       <!-- Basin selection: shared across every panel -->
       <div class="drawer-group">
-        <h3>Basin</h3>
-        <select class="basin-select" id="basinSelect">
-          <option value="">Select a basin…</option>
-        </select>
+        <h3>Basin <span class="count-badge" id="sidebarLoadedCount">0 / 0 loaded</span></h3>
+        <input type="text" class="basin-select" id="basinSelect" list="basinDatalist"
+               placeholder="Type to search basins…" autocomplete="off">
+        <datalist id="basinDatalist"></datalist>
         <div class="basin-list" id="basinList" role="listbox" aria-label="Basins"></div>
       </div>
 
@@ -629,6 +641,7 @@
         <label class="check-row"><input type="checkbox" checked data-layer="flowpaths"> Flowpaths</label>
         <label class="check-row"><input type="checkbox" checked data-layer="nexus"> Nexus points</label>
         <label class="check-row"><input type="checkbox" checked data-layer="gage"> Gage location</label>
+        <label class="check-row"><input type="checkbox" checked id="toggleBasinInfoBox"> Show "selected basin" info box</label>
       </div>
       <div class="drawer-group">
         <h3>Color scheme</h3>
@@ -651,6 +664,10 @@
           <button class="opt-btn" data-unit="cfs">ft&sup3;/s</button>
         </div>
         <p class="hint">Applies to both the streamflow chart and the monthly climatology chart.</p>
+      </div>
+
+      <div class="drawer-group">
+        <label class="check-row"><input type="checkbox" checked id="toggleMetricsBox"> Show score-metrics box on chart</label>
       </div>
 
       <div class="drawer-group">
@@ -732,6 +749,8 @@ const state = {
   dateStartMs: null,
   dateEndMs: null,
   selectedBasin: null,   // gage_no
+  showMetricsBox: true,
+  showBasinInfoBox: true,
 };
 
 const RESOLUTION_STEPS = ['15 min', 'hourly', 'daily', 'weekly', 'monthly', 'yearly'];
@@ -742,6 +761,10 @@ RESOLUTION_ANCHOR.setFullYear(0);
    REAL BASIN LOCATIONS — from gage_locs.csv
    ================================================================== */
 let BASINS = [];
+
+// Must match the geopackage.min.js <script> tag's location — see the comment
+// in <head>. If you switch to a self-hosted node_modules copy, change this too.
+const GPKG_WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@ngageoint/geopackage/dist/';
 
 const TIMESERIES_CACHE = new Map();
 const GPKG_CACHE = new Map();
@@ -993,7 +1016,7 @@ async function loadGpkgLayers(gage){
   if (!window.GeoPackage) throw new Error('GeoPackage JS is not loaded. Run: npm install @ngageoint/geopackage');
 
   if (window.GeoPackage.setSqljsWasmLocateFile) {
-    window.GeoPackage.setSqljsWasmLocateFile(file => `node_modules/@ngageoint/geopackage/dist/${file}`);
+    window.GeoPackage.setSqljsWasmLocateFile(file => `${GPKG_WASM_BASE_URL}${file}`);
   }
   const response = await fetch(`gpkgs/gage-${gage}.gpkg`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Could not load gpkgs/gage-${gage}.gpkg (${response.status})`);
@@ -1100,18 +1123,23 @@ function gageTrace(basin){
   };
 }
 
+function updateBasinInfoBoxVisibility(){
+  const infoPanel = document.getElementById('basinInfoPanel');
+  const visible = !!state.selectedBasin && state.showBasinInfoBox;
+  infoPanel.style.display = visible ? 'block' : 'none';
+}
+
 async function renderBasinMap(){
   const basin = BASINS.find(b => b.gage === state.selectedBasin);
   const chartDiv = document.getElementById('basinChart');
   const emptyDiv = document.getElementById('basinEmptyState');
-  const infoPanel = document.getElementById('basinInfoPanel');
   const status = document.getElementById('gpkgStatus');
 
   if (!basin){
-    chartDiv.style.display = 'none'; emptyDiv.style.display = 'flex'; infoPanel.style.display = 'none';
+    chartDiv.style.display = 'none'; emptyDiv.style.display = 'flex'; updateBasinInfoBoxVisibility();
     return;
   }
-  emptyDiv.style.display = 'none'; chartDiv.style.display = 'block'; infoPanel.style.display = 'block';
+  emptyDiv.style.display = 'none'; chartDiv.style.display = 'block'; updateBasinInfoBoxVisibility();
   document.getElementById('biName').textContent = basin.name;
   document.getElementById('biGage').textContent = basin.gage;
   document.getElementById('biLatLon').textContent = `${basin.lat.toFixed(4)}, ${basin.lon.toFixed(4)}`;
@@ -1215,6 +1243,18 @@ wireButtonGroup(document.getElementById('basemapGroupBasin'), (btn) => {
   selectBasemap('basemapBasin', btn, renderBasinMap);
 });
 
+document.getElementById('toggleMetricsBox').addEventListener('change', (e) => {
+  state.showMetricsBox = e.target.checked;
+  const data = state.selectedBasin ? TIMESERIES_CACHE.get(state.selectedBasin) : null;
+  const basin = state.selectedBasin && BASINS.find(b => b.gage === state.selectedBasin);
+  if (data && basin) renderTimeseries(data, basin);
+});
+
+document.getElementById('toggleBasinInfoBox').addEventListener('change', (e) => {
+  state.showBasinInfoBox = e.target.checked;
+  updateBasinInfoBoxVisibility();
+});
+
 document.querySelectorAll('[data-layer]').forEach(input => {
   input.addEventListener('change', () => {
     basinLayerVisibility[input.dataset.layer] = input.checked;
@@ -1244,20 +1284,42 @@ document.getElementById('aggSelect').addEventListener('change', (e) => {
 /* ==================================================================
    BASIN SELECT DROPDOWN + LIST + map click linking
    ================================================================== */
-function populateBasinSelects(){
-  const sel = document.getElementById('basinSelect');
-  sel.querySelectorAll('option:not([value=""])').forEach(o => o.remove());
+function basinLabel(basin){
+  return `${basin.name} (${basin.gage})`;
+}
 
+function populateBasinSelects(){
+  const input = document.getElementById('basinSelect');
+  const list = document.getElementById('basinDatalist');
+
+  list.innerHTML = '';
   BASINS.forEach(b => {
     const opt = document.createElement('option');
-    opt.value = b.gage;
-    opt.textContent = `${b.name} (${b.gage})`;
-    sel.appendChild(opt);
+    opt.value = basinLabel(b);
+    list.appendChild(opt);
   });
 
-  if (!sel.dataset.wired){
-    sel.addEventListener('change', (e) => selectBasin(e.target.value));
-    sel.dataset.wired = 'true';
+  if (!input.dataset.wired){
+    // Fires as soon as the typed/selected text exactly matches a basin label —
+    // covers both picking a datalist suggestion and typing the full name.
+    input.addEventListener('input', (e) => {
+      const match = BASINS.find(b => basinLabel(b) === e.target.value);
+      if (match) selectBasin(match.gage);
+    });
+    // On blur, snap back to the currently selected basin's label if the text
+    // doesn't resolve to any basin, so a half-typed search doesn't linger.
+    input.addEventListener('change', (e) => {
+      const match = BASINS.find(b => basinLabel(b) === e.target.value);
+      if (match) {
+        selectBasin(match.gage);
+      } else if (e.target.value.trim() === '') {
+        selectBasin(null);
+      } else {
+        const current = BASINS.find(b => b.gage === state.selectedBasin);
+        e.target.value = current ? basinLabel(current) : '';
+      }
+    });
+    input.dataset.wired = 'true';
   }
 }
 
@@ -1295,10 +1357,10 @@ function escapeHtml(value){
 
 function updateLoadedCounts(){
   const count = BASINS.length;
-  const total = document.getElementById('overviewLoadedCount');
+  const sidebar = document.getElementById('sidebarLoadedCount');
   const status = document.getElementById('statusLoadedCount');
 
-  if (total) total.textContent = `${count} / ${count}`;
+  if (sidebar) sidebar.textContent = `${count} / ${count} loaded`;
   if (status) status.textContent = `${count} / ${count}`;
 }
 
@@ -1309,7 +1371,7 @@ function selectBasin(gage){
   document.getElementById('headerBasinLabel').textContent = basin ? basin.name : 'none selected';
   document.getElementById('headerBasinDot').style.background = basin ? 'var(--water)' : 'var(--ink-soft)';
 
-  document.getElementById('basinSelect').value = gage || '';
+  document.getElementById('basinSelect').value = basin ? basinLabel(basin) : '';
   updateBasinListSelection();
 
   renderOverviewMap();  // refresh selection highlight ring
@@ -1599,7 +1661,7 @@ function renderTimeseries(data, basin){
     hovermode: 'x unified',
     plot_bgcolor: '#E7E9E2',
     paper_bgcolor: 'rgba(0,0,0,0)',
-    annotations: [
+    annotations: state.showMetricsBox ? [
       {
         xref: 'paper', yref: 'paper',
         x: 0.015, y: 0.02,
@@ -1613,7 +1675,7 @@ function renderTimeseries(data, basin){
         font: { family: 'ui-monospace, monospace', size: 11, color: '#202B26' },
         text: annotationText
       }
-    ]
+    ] : []
   };
 
   if (!timeseriesInitialized){
@@ -1660,16 +1722,21 @@ function renderClimatology(data, basin){
   const simMonthly = monthlyClimatology(data.simulated);
 
   const traces = [
+    // Observed drawn first (back layer): slightly heavier, solid line — matches
+    // the streamflow chart's Observed styling.
     {
       x: MONTH_NAMES, y: obsMonthly,
-      type: 'bar', name: 'Observed',
-      marker: { color: '#1C6E78' },
+      mode: 'lines+markers', type: 'scatter', name: 'Observed',
+      line: { width: 2.4, dash: 'solid', color: '#1C6E78' },
+      marker: { size: 6, color: '#1C6E78' },
       hovertemplate: `Observed<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
     },
+    // Simulated drawn second (front layer): slightly thinner, dashed line.
     {
       x: MONTH_NAMES, y: simMonthly,
-      type: 'bar', name: 'Simulated',
-      marker: { color: '#B9862E' },
+      mode: 'lines+markers', type: 'scatter', name: 'Simulated',
+      line: { width: 1.6, dash: 'dash', color: '#B9862E' },
+      marker: { size: 5, color: '#B9862E', symbol: 'diamond' },
       hovertemplate: `Simulated<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
     }
   ];
@@ -1682,7 +1749,6 @@ function renderClimatology(data, basin){
       xanchor: 'left',
       font: { size: 14 }
     },
-    barmode: 'group',
     xaxis: { title: 'Month', gridcolor: '#D9DED2' },
     yaxis: { title: `Mean flow (${unit})`, gridcolor: '#D9DED2', rangemode: 'tozero' },
     legend: { orientation: 'h', x: 1, xanchor: 'right', y: 1.08, yanchor: 'bottom' },
