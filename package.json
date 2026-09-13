@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@ngageoint/geopackage": "^4.2.9",
+    "plotly.js-dist-min": "^4.1.0"
+  }
+}
