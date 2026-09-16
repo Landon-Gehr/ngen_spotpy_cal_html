@@ -1912,6 +1912,9 @@ async function loadAndRenderTimeseries(){
   climChart.style.display = 'block';
   climEmpty.style.display = 'none';
 
+  timeseriesInitialized = false; 
+  climatologyInitialized = false;
+
   try {
     const data = await loadTimeseriesForGage(basin.gage);
 
