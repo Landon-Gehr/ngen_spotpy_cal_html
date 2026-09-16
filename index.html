@@ -159,7 +159,9 @@
   .sidebar-toggle:hover{ border-color: var(--water); }
   .sidebar-toggle svg{ width:14px; height:14px; }
 
-  /* ---------- main plot grid (2x2) ---------- */
+  /* ---------- main plot grid: 2 columns, each column its own
+     stacked 2-row grid so either bottom panel (overview map /
+     basin detail map) can collapse independently ---------- */
   .main{
     grid-area: main;
     position: relative;
@@ -167,9 +169,22 @@
     background: var(--bg);
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
     gap: 12px;
     padding: 12px;
+  }
+
+  .main-col{
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 12px;
+    min-height: 0;
+    min-width: 0;
+  }
+  .main-col.bottom-collapsed{
+    grid-template-rows: 1fr 44px;
+  }
+  .main-col.bottom-collapsed .panel:last-child .panel-body{
+    display: none;
   }
 
   .panel{
@@ -179,6 +194,7 @@
     overflow: hidden;
     display:flex;
     flex-direction: column;
+    min-height: 0;
   }
   .panel-head{
     flex: none;
@@ -188,7 +204,23 @@
     color: var(--ink-soft);
     background: var(--bg);
     border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
+  .panel-collapse-btn{
+    flex: none;
+    padding: 3px 9px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .panel-collapse-btn:hover{ border-color: var(--water); }
   .panel-body{
     position: relative;
     flex: 1;
@@ -500,7 +532,9 @@
   .status span.tag{ color: var(--water-deep); }
 
   @media (max-width: 900px){
-    .main{ grid-template-columns: 1fr; grid-template-rows: repeat(4, minmax(260px, 1fr)); overflow-y:auto; }
+    .main{ grid-template-columns: 1fr; overflow-y:auto; }
+    .main-col{ grid-template-rows: minmax(260px, 1fr) minmax(260px, 1fr); }
+    .main-col.bottom-collapsed{ grid-template-rows: minmax(260px, 1fr) 44px; }
   }
 </style>
 </head>
@@ -526,66 +560,83 @@
     </div>
   </div>
 
-  <!-- ================= MAIN: 2x2 PLOT GRID ================= -->
+  <!-- ================= MAIN: 2 COLUMNS, EACH A STACK OF 2 PANELS =================
+       Left column:  streamflow chart (top)  + overview map (bottom, collapsible)
+       Right column: climatology chart (top) + basin detail map (bottom, collapsible)
+  -->
   <div class="main">
 
-    <!-- top-left: primary timeseries -->
-    <section class="panel" id="panel-timeseries">
-      <div class="panel-head">Streamflow — observed vs. simulated</div>
-      <div class="panel-body">
-        <div id="timeseriesChart" class="chart-div" style="display:none"></div>
-        <div class="canvas-empty" id="timeseriesEmptyState">
-          <div class="inner">
-            <p>No basin selected.</p>
-            <p class="small">Choose one from the panel on the right, or click a point on the overview map below.</p>
+    <div class="main-col" id="colLeft">
+
+      <!-- top-left: primary timeseries -->
+      <section class="panel" id="panel-timeseries">
+        <div class="panel-head"><span>Streamflow — observed vs. simulated</span></div>
+        <div class="panel-body">
+          <div id="timeseriesChart" class="chart-div" style="display:none"></div>
+          <div class="canvas-empty" id="timeseriesEmptyState">
+            <div class="inner">
+              <p>No basin selected.</p>
+              <p class="small">Choose one from the panel on the right, or click a point on the overview map below.</p>
+            </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- top-right: monthly climatology (static) -->
-    <section class="panel" id="panel-climatology">
-      <div class="panel-head">Monthly climatology — mean flow by calendar month</div>
-      <div class="panel-body">
-        <div id="climChart" class="chart-div" style="display:none"></div>
-        <div class="canvas-empty" id="climEmptyState">
-          <div class="inner">
-            <p>No basin selected.</p>
-            <p class="small">Shows the mean flow for each calendar month, averaged across the full record.</p>
+      <!-- bottom-left: overview map (collapsible) -->
+      <section class="panel" id="panel-overview">
+        <div class="panel-head">
+          <span>Basin overview — colored by score</span>
+          <button class="panel-collapse-btn" type="button" data-collapse-target="colLeft">Hide</button>
+        </div>
+        <div class="panel-body">
+          <div id="overviewChart" class="chart-div"></div>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="main-col" id="colRight">
+
+      <!-- top-right: monthly climatology (static) -->
+      <section class="panel" id="panel-climatology">
+        <div class="panel-head"><span>Monthly climatology — mean flow by calendar month</span></div>
+        <div class="panel-body">
+          <div id="climChart" class="chart-div" style="display:none"></div>
+          <div class="canvas-empty" id="climEmptyState">
+            <div class="inner">
+              <p>No basin selected.</p>
+              <p class="small">Shows the mean flow for each calendar month, averaged across the full record.</p>
+            </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- bottom-left: overview map -->
-    <section class="panel" id="panel-overview">
-      <div class="panel-head">Basin overview — colored by score</div>
-      <div class="panel-body">
-        <div id="overviewChart" class="chart-div"></div>
-      </div>
-    </section>
-
-    <!-- bottom-right: basin detail map -->
-    <section class="panel" id="panel-basin">
-      <div class="panel-head">Basin detail — GPKG geometry</div>
-      <div class="panel-body">
-        <div id="basinChart" class="chart-div" style="display:none"></div>
-        <div class="canvas-empty" id="basinEmptyState">
-          <div class="inner">
-            <p>No basin selected.</p>
-            <p class="small">Choose one from the panel on the right, or click a point on the overview map.</p>
+      <!-- bottom-right: basin detail map (collapsible) -->
+      <section class="panel" id="panel-basin">
+        <div class="panel-head">
+          <span>Basin detail — GPKG geometry</span>
+          <button class="panel-collapse-btn" type="button" data-collapse-target="colRight">Hide</button>
+        </div>
+        <div class="panel-body">
+          <div id="basinChart" class="chart-div" style="display:none"></div>
+          <div class="canvas-empty" id="basinEmptyState">
+            <div class="inner">
+              <p>No basin selected.</p>
+              <p class="small">Choose one from the panel on the right, or click a point on the overview map.</p>
+            </div>
+          </div>
+          <div class="map-overlay" id="basinInfoPanel" style="display:none">
+            <h4>Selected basin</h4>
+            <div class="row"><span class="k">name</span><span id="biName">—</span></div>
+            <div class="row"><span class="k">gage</span><span id="biGage">—</span></div>
+            <div class="row"><span class="k">lat, lon</span><span id="biLatLon">—</span></div>
+            <div class="row"><span class="k">hovered item</span><span id="basinHoveredItem">None</span></div>
+            <div class="row"><span class="k">mouse coordinates</span><span id="basinMouseCoords">None</span></div>
           </div>
         </div>
-        <div class="map-overlay" id="basinInfoPanel" style="display:none">
-          <h4>Selected basin</h4>
-          <div class="row"><span class="k">name</span><span id="biName">—</span></div>
-          <div class="row"><span class="k">gage</span><span id="biGage">—</span></div>
-          <div class="row"><span class="k">lat, lon</span><span id="biLatLon">—</span></div>
-          <div class="row"><span class="k">hovered item</span><span id="basinHoveredItem">None</span></div>
-          <div class="row"><span class="k">mouse coordinates</span><span id="basinMouseCoords">None</span></div>
-        </div>
-      </div>
-    </section>
+      </section>
+
+    </div>
 
   </div>
 
@@ -609,12 +660,12 @@
         <span class="section-tag">overview map</span>
         <h3>Score metric</h3>
         <div class="btn-group" id="metricGroup">
-          <button class="opt-btn active" data-metric="NSE">NSE</button>
-          <button class="opt-btn" data-metric="KGE">KGE</button>
+          <button class="opt-btn" data-metric="NSE">NSE</button>
+          <button class="opt-btn active" data-metric="KGE">KGE</button>
           <button class="opt-btn" data-metric="PBIAS">PBIAS</button>
           <button class="opt-btn" data-metric="RMSE">RMSE</button>
         </div>
-        <p class="hint">Recolors each basin point on the overview map and highlights this metric in the streamflow chart's score annotation.</p>
+        <p class="hint">Recolors each basin point on the overview map and highlights this metric in the streamflow chart's score annotation. Basins with no value for the selected metric are shown as hollow white markers.</p>
       </div>
       <div class="drawer-group">
         <h3>Basemap</h3>
@@ -735,7 +786,7 @@
    STATE
    ================================================================== */
 const state = {
-  metric: 'NSE',
+  metric: 'KGE',
   basemapOverview: 'outline',
   basemapBasin: 'outline',
   basinColorScheme: 'default',
@@ -793,6 +844,24 @@ sidebarToggle.addEventListener('click', () => {
 });
 
 /* ==================================================================
+   PANEL COLLAPSE TOGGLES (overview map / basin detail map)
+   Each bottom panel lives in its own .main-col, so collapsing one
+   never affects the other column's layout.
+   ================================================================== */
+document.querySelectorAll('.panel-collapse-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const target = document.getElementById(btn.dataset.collapseTarget);
+    if (!target) return;
+    const collapsed = target.classList.toggle('bottom-collapsed');
+    btn.textContent = collapsed ? 'Show' : 'Hide';
+    setTimeout(() => {
+      if (overviewInitialized) Plotly.Plots.resize('overviewChart');
+      if (basinInitialized) Plotly.Plots.resize('basinChart');
+    }, 200);
+  });
+});
+
+/* ==================================================================
    BASIN METADATA — loaded from gage_locs.csv
    ================================================================== */
 function parseCSV(text){
@@ -842,6 +911,18 @@ function parseCSV(text){
     .map(r => Object.fromEntries(headers.map((h, i) => [h, (r[i] ?? '').trim()])));
 }
 
+// Parses a score-metric cell into a finite number or NaN. Blank cells,
+// "NaN"/"NA"/"null" text, and unparsable values all become NaN rather than
+// silently becoming 0 — callers must handle NaN explicitly (see
+// metricColorSpec / overviewTrace).
+function parseMetric(value){
+  if (value === undefined || value === null) return NaN;
+  const trimmed = String(value).trim();
+  if (trimmed === '' || /^(nan|na|null|none)$/i.test(trimmed)) return NaN;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 async function loadBasins(){
   const response = await fetch('gage_locs.csv', { cache: 'no-store' });
   if (!response.ok){
@@ -858,17 +939,19 @@ async function loadBasins(){
     flowpath: r.flowpath_id,
     divide: r.divide_id,
     scores: {
-      NSE: Number(r.NSE),
-      KGE: Number(r.KGE),
-      PBIAS: Number(r.PBIAS),
-      RMSE: Number(r.RMSE),
+      NSE: parseMetric(r.NSE),
+      KGE: parseMetric(r.KGE),
+      PBIAS: parseMetric(r.PBIAS),
+      RMSE: parseMetric(r.RMSE),
     }
   }));
 
+  // Only identity/location fields are required. A basin missing one or more
+  // score metrics is still kept — it just renders as "no data" on the map
+  // for that metric instead of being dropped entirely.
   const invalid = BASINS.filter(b =>
     !b.gage || !b.name ||
-    !Number.isFinite(b.lat) || !Number.isFinite(b.lon) ||
-    METRICS.some(m => !Number.isFinite(b.scores[m]))
+    !Number.isFinite(b.lat) || !Number.isFinite(b.lon)
   );
 
   if (invalid.length){
@@ -888,13 +971,13 @@ function metricValues(metric){
 }
 
 function metricColorSpec(metric){
-  const values = metricValues(metric);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const values = metricValues(metric).filter(Number.isFinite);
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 1;
 
   return {
     cmin: min,
-    cmax: max || min + 1,
+    cmax: max > min ? max : min + 1,
     reversescale: metric === 'RMSE',
   };
 }
@@ -916,9 +999,19 @@ const SCORE_COLORSCALE = [
 let overviewInitialized = false;
 
 function overviewTrace(){
-  const values = metricValues(state.metric);
-  const sizes = BASINS.map(b => state.selectedBasin === b.gage ? 20 : 17);
-  const pointSizes = BASINS.map(b => state.selectedBasin === b.gage ? 14 : 12);
+  const sizeFor = gage => state.selectedBasin === gage ? 24 : 17;
+  const pointSizeFor = gage => state.selectedBasin === gage ? 14 : 12;
+
+  // Split into basins that have a finite value for the current metric
+  // (colored via the colorscale) and basins that don't (rendered as
+  // hollow white/black markers instead of silently plotting as 0).
+  const finite = [];
+  const missing = [];
+  BASINS.forEach(b => {
+    const v = b.scores[state.metric];
+    (Number.isFinite(v) ? finite : missing).push(b);
+  });
+
   const base = {
     lon: BASINS.map(b => b.lon),
     lat: BASINS.map(b => b.lat),
@@ -926,22 +1019,25 @@ function overviewTrace(){
     type: 'scattermap',
     hoverinfo: 'skip',
     showlegend: false,
-    marker: { size: sizes, color: '#000000', symbol: 'circle', opacity: 1 }
+    customdata: BASINS.map(b => b.gage),
+    marker: { size: BASINS.map(b => sizeFor(b.gage)), color: '#000000', symbol: 'circle', opacity: 1 }
   };
+
   const points = {
-    lon: BASINS.map(b => b.lon),
-    lat: BASINS.map(b => b.lat),
+    lon: finite.map(b => b.lon),
+    lat: finite.map(b => b.lat),
     mode: 'markers',
     type: 'scattermap',
-    text: BASINS.map(b =>
+    text: finite.map(b =>
       `${b.name}<br>Gage ${b.gage}<br>${state.metric}: ${b.scores[state.metric]}`
     ),
     hoverinfo: 'text',
     showlegend: false,
+    customdata: finite.map(b => b.gage),
     marker: {
-      size: pointSizes,
+      size: finite.map(b => pointSizeFor(b.gage)),
       line: { width: 0, color: '#000000' },
-      color: values,
+      color: finite.map(b => b.scores[state.metric]),
       colorscale: SCORE_COLORSCALE,
       ...metricColorSpec(state.metric),
       colorbar: {
@@ -952,7 +1048,24 @@ function overviewTrace(){
       }
     }
   };
-  return [base, points];
+
+  const noData = {
+    lon: missing.map(b => b.lon),
+    lat: missing.map(b => b.lat),
+    mode: 'markers',
+    type: 'scattermap',
+    text: missing.map(b => `${b.name}<br>Gage ${b.gage}<br>${state.metric}: no data`),
+    hoverinfo: 'text',
+    showlegend: false,
+    customdata: missing.map(b => b.gage),
+    marker: {
+      size: missing.map(b => pointSizeFor(b.gage)),
+      color: '#FFFFFF',
+      line: { width: 1.5, color: '#000000' }
+    }
+  };
+
+  return [base, points, noData];
 }
 
 function mapStyleForBasemap(style){
@@ -991,8 +1104,8 @@ function renderOverviewMap(){
 
     div.on('plotly_click', (evt) => {
       if (!evt.points || !evt.points.length) return;
-      const gage = BASINS[evt.points[0].pointIndex].gage;
-      selectBasin(gage);
+      const gage = evt.points[0].customdata;
+      if (gage) selectBasin(gage);
     });
 
     overviewInitialized = true;
@@ -1172,7 +1285,9 @@ async function renderBasinMap(){
 
   const layout = {
     margin: { l: 0, r: 0, t: 0, b: 0 },
-    map: { style: mapStyleForBasemap(state.basemapBasin), center: { lon: basin.lon, lat: basin.lat }, zoom: 10 },
+    // Zoomed further out by default (was 10) so the initial view shows more
+    // of the surrounding context instead of being tightly cropped.
+    map: { style: mapStyleForBasemap(state.basemapBasin), center: { lon: basin.lon, lat: basin.lat }, zoom: 8 },
     hoverlabel: { bgcolor: '#202B26', font: { color: '#fff', family: 'ui-monospace, monospace', size: 11 } },
     paper_bgcolor: 'rgba(0,0,0,0)', showlegend: false
   };
@@ -1383,7 +1498,7 @@ function selectBasin(gage){
 /* ==================================================================
    FLOW / TIMESERIES
    ================================================================== */
-function parseTimeseriesCSV(text){
+function parseSimulatedTimeseriesCSV(text){
   const records = parseCSV(text);
 
   return records
@@ -1394,25 +1509,36 @@ function parseTimeseriesCSV(text){
     .filter(r => r.timestamp && Number.isFinite(r.flow_m3s));
 }
 
+function parseObservedTimeseriesCSV(text){
+  const records = parseCSV(text);
+
+  return records
+    .map(r => ({
+      timestamp: r.value_date,
+      flow_m3s: Number(r.obs_flow)
+    }))
+    .filter(r => r.timestamp && Number.isFinite(r.flow_m3s));
+}
+
 async function loadTimeseriesForGage(gage){
   if (TIMESERIES_CACHE.has(gage)){
     return TIMESERIES_CACHE.get(gage);
   }
 
   const fileName = `gage-${gage}.csv`;
-  const observedPath = `synthetic_data/observed/${fileName}`;
-  const simulatedPath = `synthetic_data/simulated/${fileName}`;
+  // Renamed from "synthetic_data" now that real data is being used.
+  const observedPath = `data/observed/${fileName}`;
+  const simulatedPath = `data/simulated/${fileName}`;
 
   const [observedResponse, simulatedResponse] = await Promise.all([
     fetch(observedPath, { cache: 'no-store' }),
     fetch(simulatedPath, { cache: 'no-store' })
   ]);
 
-  if (!observedResponse.ok){
-    throw new Error(`Could not load observed/${fileName} (${observedResponse.status})`);
-  }
-  if (!simulatedResponse.ok){
-    throw new Error(`Could not load simulated/${fileName} (${simulatedResponse.status})`);
+  if (!observedResponse.ok || !simulatedResponse.ok){
+    const err = new Error(`currently no streamflow data for gage ${gage}`);
+    err.noData = true;
+    throw err;
   }
 
   const [observedText, simulatedText] = await Promise.all([
@@ -1421,15 +1547,14 @@ async function loadTimeseriesForGage(gage){
   ]);
 
   const data = {
-    observed: parseTimeseriesCSV(observedText),
-    simulated: parseTimeseriesCSV(simulatedText)
+    observed: parseObservedTimeseriesCSV(observedText),
+    simulated: parseSimulatedTimeseriesCSV(simulatedText)
   };
 
-  if (!data.observed.length){
-    throw new Error(`Observed file ${fileName} contains no valid timestamp/flow_m3s rows.`);
-  }
-  if (!data.simulated.length){
-    throw new Error(`Simulated file ${fileName} contains no valid timestamp/flow_m3s rows.`);
+  if (!data.observed.length || !data.simulated.length){
+    const err = new Error(`currently no streamflow data for gage ${gage}`);
+    err.noData = true;
+    throw err;
   }
 
   TIMESERIES_CACHE.set(gage, data);
@@ -1447,8 +1572,8 @@ function commonDateBounds(data){
   const allSimulated = data.simulated.map(d => Date.parse(d.timestamp)).filter(Number.isFinite);
   if (!allObserved.length || !allSimulated.length) return null;
   return {
-    min: Math.max(Math.min(...allObserved), Math.min(...allSimulated)),
-    max: Math.min(Math.max(...allObserved), Math.max(...allSimulated))
+    min: Math.max(allObserved.reduce((min, current) => current < min ? current : min, allObserved[0]), allSimulated.reduce((min, current) => current < min ? current : min, allSimulated[0])),
+    max: Math.min(allObserved.reduce((max, current) => current > max ? current : max, allObserved[0]), allSimulated.reduce((max, current) => current > max ? current : max, allSimulated[0]))
   };
 }
 
@@ -1801,7 +1926,9 @@ async function loadAndRenderTimeseries(){
     climChart.style.display = 'none';
     tsEmpty.style.display = 'flex';
     climEmpty.style.display = 'flex';
-    const message = `
+    const message = err.noData
+      ? `<div class="inner"><p>currently no streamflow data for gage ${basin.gage}</p></div>`
+      : `
       <div class="inner">
         <p style="color:#A6432B">Failed to load streamflow data.</p>
         <p class="small">${err.message}</p>
