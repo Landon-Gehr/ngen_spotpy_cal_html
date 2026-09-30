@@ -3,16 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Basin Calibration Explorer</title>
+<title>Basin Calibrations</title>
 <script src="plotly.min.js"></script>
-<!--
-  Loaded from a CDN rather than a committed node_modules/ folder: most default
-  .gitignore templates exclude node_modules, so a locally-working copy can
-  silently fail to reach GitHub Pages. If you'd rather self-host this file,
-  make sure you `git add -f node_modules/@ngageoint/geopackage/dist/...` and
-  update the two paths below (script src + WASM_BASE_URL) to match.
--->
-<script src="https://cdn.jsdelivr.net/npm/@ngageoint/geopackage/dist/geopackage.min.js"></script>
 <style>
   /* ============================================================
      TOKENS  (unchanged from the tabbed version)
@@ -813,12 +805,20 @@ RESOLUTION_ANCHOR.setFullYear(0);
    ================================================================== */
 let BASINS = [];
 
-// Must match the geopackage.min.js <script> tag's location — see the comment
-// in <head>. If you switch to a self-hosted node_modules copy, change this too.
-const GPKG_WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@ngageoint/geopackage/dist/';
 
-const TIMESERIES_CACHE = new Map();
-const GPKG_CACHE = new Map();
+class LRU{
+  constructor(max){ this.max = max; this.m = new Map(); }
+  has(k){ return this.m.has(k); }
+  get(k){ if (!this.m.has(k)) return undefined; const v = this.m.get(k); this.m.delete(k); this.m.set(k, v); return v; }
+  set(k, v){ this.m.delete(k); this.m.set(k, v); while (this.m.size > this.max) this.m.delete(this.m.keys().next().value); }
+}
+const CACHE_MAX = 3;                 // basins kept in memory (timeseries / geometry each)
+const TIMESERIES_CACHE = new LRU(CACHE_MAX);
+const GEO_CACHE = new LRU(CACHE_MAX);
+const STEP = 15 * 60 * 1000;         // native grid step (ms)
+const MAX_BUCKETS = 3000;            // min/max buckets drawn -> <= 6000 points per line
+let CLIM = null, loadToken = 0, mapToken = 0;
+const CLIM_P = fetch('data/clim.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).catch(() => null);
 let basinLayerVisibility = { catchments: true, flowpaths: true, nexus: true, gage: true };
 let timeseriesInitialized = false;
 let climatologyInitialized = false;
@@ -1124,30 +1124,24 @@ function renderOverviewMap(){
    ================================================================== */
 let basinInitialized = false;
 
-async function loadGpkgLayers(gage){
-  if (GPKG_CACHE.has(gage)) return GPKG_CACHE.get(gage);
-  if (!window.GeoPackage) throw new Error('GeoPackage JS is not loaded. Run: npm install @ngageoint/geopackage');
 
-  if (window.GeoPackage.setSqljsWasmLocateFile) {
-    window.GeoPackage.setSqljsWasmLocateFile(file => `${GPKG_WASM_BASE_URL}${file}`);
-  }
-  const response = await fetch(`gpkgs/gage-${gage}.gpkg`, { cache: 'no-store' });
-  if (!response.ok) throw new Error(`Could not load gpkgs/gage-${gage}.gpkg (${response.status})`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const gp = await window.GeoPackage.GeoPackageAPI.open(bytes);
-
-  const out = {};
-  for (const table of ['divides', 'flowpaths', 'nexus']) {
-    if (!gp.hasFeatureTable || !gp.hasFeatureTable(table)) continue;
-    const result = gp.queryForGeoJSONFeaturesInTable(table);
-    const features = [];
-    for (const feature of result) features.push(feature);
-    if (result.close) result.close();
-    out[table] = { type: 'FeatureCollection', features };
-  }
-  gp.close();
-  GPKG_CACHE.set(gage, out);
-  return out;
+async function loadGeo(gage){
+  const hit = GEO_CACHE.get(gage);
+  if (hit) return hit;
+  const r = await fetch(`geo/gage-${gage}.json`, { cache: 'no-cache' });
+  if (!r.ok) throw new Error(`Could not load geo/gage-${gage}.json (${r.status})`);
+  const j = await r.json();
+  const g = { divFc: j.divides || { type: 'FeatureCollection', features: [] } };
+  g.divIds = g.divFc.features.map(f => String(f.properties.id));
+  g.fp = { lon: [], lat: [], text: [] };
+  (j.flowpaths || []).forEach(([id, lines]) => lines.forEach(line => {
+    line.forEach(([x, y]) => { g.fp.lon.push(x); g.fp.lat.push(y); g.fp.text.push('Flowpath ID: ' + id); });
+    g.fp.lon.push(null); g.fp.lat.push(null); g.fp.text.push('');
+  }));
+  const nx = j.nexus || [];
+  g.nx = { lon: nx.map(n => n[1]), lat: nx.map(n => n[2]), text: nx.map(n => 'Nexus ID: ' + n[0]) };
+  GEO_CACHE.set(gage, g);
+  return g;
 }
 
 function featureId(feature, fallback){
@@ -1167,59 +1161,34 @@ const BASIN_COLOR_SCHEMES = {
 
 function basinColors(){ return BASIN_COLOR_SCHEMES[state.basinColorScheme] || BASIN_COLOR_SCHEMES.default; }
 
-function geometryToSegments(geometry){
-  if (!geometry) return [];
-  const coords = geometry.coordinates;
-  if (geometry.type === 'LineString') return [coords];
-  if (geometry.type === 'MultiLineString') return coords;
-  if (geometry.type === 'Polygon') return coords;
-  if (geometry.type === 'MultiPolygon') return coords.flat(1);
-  return [];
-}
 
-function polygonTrace(feature, index){
-  const segments = geometryToSegments(feature.geometry);
-  const lon = [], lat = [];
-  segments.forEach(ring => {
-    ring.forEach(([x,y]) => { lon.push(x); lat.push(y); });
-    lon.push(null); lat.push(null);
-  });
-  const id = featureId(feature, index);
-  return {
-    type: 'scattermap', mode: 'lines', lon, lat,
-    name: `Catchment ${id}`,
-    text: Array(lon.length).fill(`Catchment ID: ${id}`), hoverinfo: 'text',
-    line: { width: 2, color: basinColors().catchmentLine },
-    fill: 'toself', fillcolor: basinColors().catchmentFill,
-    connectgaps: false, hoveron: 'fills'
-  };
-}
-
-function lineTrace(feature, index){
-  const segments = geometryToSegments(feature.geometry);
-  const lon = [], lat = [];
-  segments.forEach(line => {
-    line.forEach(([x,y]) => { lon.push(x); lat.push(y); });
-    lon.push(null); lat.push(null);
-  });
-  const id = featureId(feature, index);
-  return {
-    type: 'scattermap', mode: 'lines', lon, lat,
-    name: `Flowpath ${id}`,
-    text: Array(lon.length).fill(`Flowpath ID: ${id}`), hoverinfo: 'text',
-    line: { width: 3, color: basinColors().flowpath }, connectgaps: false
-  };
-}
-
-function pointTrace(feature, index){
-  const id = featureId(feature, index);
-  const c = feature.geometry && feature.geometry.coordinates;
-  if (!c) return null;
-  return {
-    type: 'scattermap', mode: 'markers', lon: [c[0]], lat: [c[1]],
-    name: `Nexus ${id}`, text: [`Nexus ID: ${id}`], hoverinfo: 'text',
-    marker: { size: 10, color: basinColors().nexus, line: { width: 2, color: '#000000' } }
-  };
+function geoTraces(g){
+  const c = basinColors(), out = [];
+  if (basinLayerVisibility.catchments && g.divIds.length){
+    const m = c.catchmentFill.match(/[\d.]+/g);            // "rgba(r, g, b, a)"
+    const col = `rgb(${m[0]},${m[1]},${m[2]})`;
+    out.push({
+      type: 'choroplethmap', name: 'Catchments', geojson: g.divFc, featureidkey: 'properties.id',
+      locations: g.divIds, z: g.divIds.map(() => 1), zmin: 0, zmax: 1,
+      colorscale: [[0, col], [1, col]], showscale: false,
+      text: g.divIds.map(id => 'Catchment ID: ' + id), hoverinfo: 'text',
+      marker: { opacity: +m[3], line: { width: 2, color: c.catchmentLine } }
+    });
+  }
+  if (basinLayerVisibility.flowpaths && g.fp.lon.length){
+    out.push({
+      type: 'scattermap', mode: 'lines', name: 'Flowpaths', lon: g.fp.lon, lat: g.fp.lat,
+      text: g.fp.text, hoverinfo: 'text', connectgaps: false, line: { width: 3, color: c.flowpath }
+    });
+  }
+  if (basinLayerVisibility.nexus && g.nx.lon.length){
+    out.push({
+      type: 'scattermap', mode: 'markers', name: 'Nexus', lon: g.nx.lon, lat: g.nx.lat,
+      text: g.nx.text, hoverinfo: 'text',
+      marker: { size: 10, color: c.nexus, line: { width: 2, color: '#000000' } }
+    });
+  }
+  return out;
 }
 
 function gageTrace(basin){
@@ -1242,13 +1211,16 @@ function updateBasinInfoBoxVisibility(){
   infoPanel.style.display = visible ? 'block' : 'none';
 }
 
+
 async function renderBasinMap(){
+  const tok = ++mapToken;
   const basin = BASINS.find(b => b.gage === state.selectedBasin);
   const chartDiv = document.getElementById('basinChart');
   const emptyDiv = document.getElementById('basinEmptyState');
   const status = document.getElementById('gpkgStatus');
 
   if (!basin){
+    if (basinInitialized){ Plotly.purge(chartDiv); basinInitialized = false; }
     chartDiv.style.display = 'none'; emptyDiv.style.display = 'flex'; updateBasinInfoBoxVisibility();
     return;
   }
@@ -1257,64 +1229,48 @@ async function renderBasinMap(){
   document.getElementById('biGage').textContent = basin.gage;
   document.getElementById('biLatLon').textContent = `${basin.lat.toFixed(4)}, ${basin.lon.toFixed(4)}`;
 
-  const traces = [];
-  traces.push({
-    type: 'scattermap', mode: 'markers', lon: [basin.lon], lat: [basin.lat],
-    marker: { size: 0.01, opacity: 0 }, hoverinfo: 'skip', showlegend: false
-  });
+  let g = null;
   try {
-    const layers = await loadGpkgLayers(basin.gage);
-    if (basinLayerVisibility.catchments && layers.divides) {
-      layers.divides.features.forEach((f,i) => traces.push(polygonTrace(f,i)));
-    }
-    if (basinLayerVisibility.flowpaths && layers.flowpaths) {
-      layers.flowpaths.features.forEach((f,i) => traces.push(lineTrace(f,i)));
-    }
-    if (basinLayerVisibility.nexus && layers.nexus) {
-      layers.nexus.features.forEach((f,i) => { const t = pointTrace(f,i); if (t) traces.push(t); });
-    }
-    if (basinLayerVisibility.gage) traces.push(gageTrace(basin));
-    status.textContent = `GPKG loaded: ${Object.entries(layers).map(([k,v]) => `${k} ${v.features.length}`).join(' · ')}`;
+    g = await loadGeo(basin.gage);
+    status.textContent = `Geometry loaded: catchments ${g.divIds.length} · flowpaths ${g.fp.text.filter(Boolean).length ? 'yes' : 0} · nexus ${g.nx.lon.length}`;
   } catch (err) {
     console.error(err);
-    status.textContent = `GPKG: ${err.message}`;
+    status.textContent = `Geometry: ${err.message}`;
   }
-  if (basinLayerVisibility.gage && !traces.some(t => t.name === `Gage ${basin.gage}`)) {
-    traces.push(gageTrace(basin));
-  }
+  if (tok !== mapToken) return;            // a newer selection superseded this one
+
+  const traces = [{
+    type: 'scattermap', mode: 'markers', lon: [basin.lon], lat: [basin.lat],
+    marker: { size: 0.01, opacity: 0 }, hoverinfo: 'skip', showlegend: false
+  }];
+  if (g) traces.push(...geoTraces(g));
+  if (basinLayerVisibility.gage) traces.push(gageTrace(basin));
 
   const layout = {
     margin: { l: 0, r: 0, t: 0, b: 0 },
-    // Zoomed further out by default (was 10) so the initial view shows more
-    // of the surrounding context instead of being tightly cropped.
     map: { style: mapStyleForBasemap(state.basemapBasin), center: { lon: basin.lon, lat: basin.lat }, zoom: 8 },
     hoverlabel: { bgcolor: '#202B26', font: { color: '#fff', family: 'ui-monospace, monospace', size: 11 } },
-    paper_bgcolor: 'rgba(0,0,0,0)', showlegend: false
+    paper_bgcolor: 'rgba(0,0,0,0)', showlegend: false,
+    uirevision: basin.gage                 // keep pan/zoom when toggling layers or colors
   };
-  if (!basinInitialized) {
-    Plotly.newPlot(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+  const cfg = { displayModeBar: false, responsive: true };
+  if (!basinInitialized){
+    Plotly.newPlot(chartDiv, traces, layout, cfg);
     chartDiv.on('plotly_hover', updateBasinHoverInfo);
     chartDiv.on('plotly_unhover', clearBasinHoverInfo);
     basinInitialized = true;
   } else {
-    Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+    Plotly.react(chartDiv, traces, layout, cfg);
   }
 }
 
 function updateBasinHoverInfo(evt){
   const p = evt && evt.points && evt.points[0];
-  const item = document.getElementById('basinHoveredItem');
-  const coords = document.getElementById('basinMouseCoords');
   if (!p) return;
-  let label = 'None';
-  if (p.data && p.data.name) label = p.data.name;
-  else if (p.text) label = String(p.text).replace(/<br>/g, ' ');
-  item.textContent = label;
-  if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) {
-    coords.textContent = `${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)}`;
-  } else {
-    coords.textContent = 'None';
-  }
+  document.getElementById('basinHoveredItem').textContent =
+    p.text ? String(p.text).replace(/<br>/g, ' ') : ((p.data && p.data.name) || 'None');
+  document.getElementById('basinMouseCoords').textContent =
+    (Number.isFinite(p.lat) && Number.isFinite(p.lon)) ? `${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)}` : 'None';
 }
 
 function clearBasinHoverInfo(){
@@ -1479,102 +1435,63 @@ function updateLoadedCounts(){
   if (status) status.textContent = `${count} / ${count}`;
 }
 
+
+function updateOverviewSelection(){
+  if (!overviewInitialized) return;
+  const f = [], m = [];
+  BASINS.forEach(b => (Number.isFinite(b.scores[state.metric]) ? f : m).push(b));
+  const sel = b => b.gage === state.selectedBasin;
+  Plotly.restyle('overviewChart', {
+    'marker.size': [BASINS.map(b => sel(b) ? 24 : 17), f.map(b => sel(b) ? 14 : 12), m.map(b => sel(b) ? 14 : 12)]
+  }, [0, 1, 2]);
+}
+
 function selectBasin(gage){
   state.selectedBasin = gage || null;
   const basin = BASINS.find(b => b.gage === gage);
 
   document.getElementById('headerBasinLabel').textContent = basin ? basin.name : 'none selected';
   document.getElementById('headerBasinDot').style.background = basin ? 'var(--water)' : 'var(--ink-soft)';
-
   document.getElementById('basinSelect').value = basin ? basinLabel(basin) : '';
   updateBasinListSelection();
 
-  renderOverviewMap();  // refresh selection highlight ring
-  renderBasinMap();     // load the zoomed box for the new basin
-
+  updateOverviewSelection();
+  renderBasinMap();
   loadAndRenderTimeseries();
 }
 
 /* ==================================================================
-   FLOW / TIMESERIES
+   TIMESERIES DATA — data/bin/gage-<id>.bin (see prep_timeseries.py):
+   float64 start_ms | int32 n | int32 pad | float32 obs[n] | float32 sim[n]
    ================================================================== */
-function parseSimulatedTimeseriesCSV(text){
-  const records = parseCSV(text);
-
-  return records
-    .map(r => ({
-      timestamp: r.timestamp,
-      flow_m3s: Number(r.flow_m3s)
-    }))
-    .filter(r => r.timestamp && Number.isFinite(r.flow_m3s));
-}
-
-function parseObservedTimeseriesCSV(text){
-  const records = parseCSV(text);
-
-  return records
-    .map(r => ({
-      timestamp: r.value_date,
-      flow_m3s: Number(r.obs_flow)
-    }))
-    .filter(r => r.timestamp && Number.isFinite(r.flow_m3s));
-}
-
 async function loadTimeseriesForGage(gage){
-  if (TIMESERIES_CACHE.has(gage)){
-    return TIMESERIES_CACHE.get(gage);
-  }
-
-  const fileName = `gage-${gage}.csv`;
-  // Renamed from "synthetic_data" now that real data is being used.
-  const observedPath = `data/observed/${fileName}`;
-  const simulatedPath = `data/simulated/${fileName}`;
-
-  const [observedResponse, simulatedResponse] = await Promise.all([
-    fetch(observedPath, { cache: 'no-store' }),
-    fetch(simulatedPath, { cache: 'no-store' })
-  ]);
-
-  if (!observedResponse.ok || !simulatedResponse.ok){
+  const hit = TIMESERIES_CACHE.get(gage);
+  if (hit) return hit;
+  const r = await fetch(`data/bin/gage-${gage}.bin`, { cache: 'no-cache' });
+  if (!r.ok){
     const err = new Error(`currently no streamflow data for gage ${gage}`);
     err.noData = true;
     throw err;
   }
-
-  const [observedText, simulatedText] = await Promise.all([
-    observedResponse.text(),
-    simulatedResponse.text()
-  ]);
-
+  const buf = await r.arrayBuffer();
+  const dv = new DataView(buf);
+  const n = dv.getInt32(8, true);
   const data = {
-    observed: parseObservedTimeseriesCSV(observedText),
-    simulated: parseSimulatedTimeseriesCSV(simulatedText)
+    start: dv.getFloat64(0, true), n,
+    obs: new Float32Array(buf, 16, n),
+    sim: new Float32Array(buf, 16 + 4 * n, n)
   };
-
-  if (!data.observed.length || !data.simulated.length){
-    const err = new Error(`currently no streamflow data for gage ${gage}`);
-    err.noData = true;
-    throw err;
-  }
-
   TIMESERIES_CACHE.set(gage, data);
   return data;
 }
 
+
 function formatDateTimeLocal(ms){
-  const d = new Date(ms);
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return new Date(ms).toISOString().slice(0, 19);
 }
 
 function commonDateBounds(data){
-  const allObserved = data.observed.map(d => Date.parse(d.timestamp)).filter(Number.isFinite);
-  const allSimulated = data.simulated.map(d => Date.parse(d.timestamp)).filter(Number.isFinite);
-  if (!allObserved.length || !allSimulated.length) return null;
-  return {
-    min: Math.max(allObserved.reduce((min, current) => current < min ? current : min, allObserved[0]), allSimulated.reduce((min, current) => current < min ? current : min, allSimulated[0])),
-    max: Math.min(allObserved.reduce((max, current) => current > max ? current : max, allObserved[0]), allSimulated.reduce((max, current) => current > max ? current : max, allSimulated[0]))
-  };
+  return { min: data.start, max: data.start + (data.n - 1) * STEP };
 }
 
 function setDateRangeControls(data, reset = false){
@@ -1614,266 +1531,184 @@ function flowUnitLabel(){
   return state.unit === 'cfs' ? 'ft³/s' : 'm³/s';
 }
 
-function roundTimestamp(timestampMs){
-  const d = new Date(timestampMs);
-  const r = state.resolutionDuration;
 
-  if (r.days === 0 && r.hours === 0 && r.minutes === 0 && r.seconds === 0 && (r.years || r.months)){
-    const stepMonths = r.years * 12 + r.months;
-    const monthIndex = d.getFullYear() * 12 + d.getMonth();
-    const anchorIndex = RESOLUTION_ANCHOR.getFullYear() * 12 + RESOLUTION_ANCHOR.getMonth();
-    const relative = monthIndex - anchorIndex;
-    const lower = Math.floor(relative / stepMonths) * stepMonths + anchorIndex;
-    const upper = lower + stepMonths;
-    const lowerDate = new Date(Math.floor(lower / 12), lower % 12, 1).getTime();
-    const upperDate = new Date(Math.floor(upper / 12), upper % 12, 1).getTime();
-    return (timestampMs - lowerDate) < (upperDate - timestampMs) ? lowerDate : upperDate;
+/* Bucket containing t -> [lo, hi, label]; label = nearest boundary (same rounding as before). */
+function bucketAt(t, cal){
+  if (!cal){
+    const I = state.resolutionMs, k = Math.round(t / I);
+    return [k * I - I / 2, k * I + I / 2, k * I];
+  }
+  const r = state.resolutionDuration, sm = r.years * 12 + r.months, d = new Date(t);
+  const k = Math.floor(((d.getUTCFullYear() - 1970) * 12 + d.getUTCMonth()) / sm);
+  const c = j => { const q = j * sm; return Date.UTC(1970 + Math.floor(q / 12), ((q % 12) + 12) % 12, 1); };
+  const a = c(k), b = c(k + 1), kk = (t - a < b - t) ? k : k + 1, L = c(kk);
+  return [(c(kk - 1) + L) / 2, (L + c(kk + 1)) / 2, L];
+}
+
+/* Aggregate obs + sim over the selected date window at the current resolution.
+   Typed arrays, one pass. Returns {T,O,S,m}; unit scaling already applied. */
+function aggregate(d){
+  const sc = unitScale();
+  const i0 = Math.max(0, Math.ceil((state.dateStartMs - d.start) / STEP));
+  const i1 = Math.min(d.n - 1, Math.floor((state.dateEndMs - d.start) / STEP));
+  const cap = Math.max(0, i1 - i0 + 1);
+  const T = new Float64Array(cap), O = new Float64Array(cap), S = new Float64Array(cap);
+  const r = state.resolutionDuration;
+  const cal = !r.days && !r.hours && !r.minutes && (r.years || r.months);
+  let m = 0;
+
+  if (!cal && state.resolutionMs <= STEP){                    // native resolution: no bucketing
+    for (let i = i0; i <= i1; i++){ T[m] = d.start + i * STEP; O[m] = d.obs[i] * sc; S[m] = d.sim[i] * sc; m++; }
+    return { T, O, S, m };
   }
 
-  const interval = state.resolutionMs;
-  if (!Number.isFinite(interval) || interval <= 0) return timestampMs;
-  return Math.round(timestampMs / interval) * interval;
+  const mode = state.agg;
+  const pick = (s, c, mn, mx) => c ? (mode === 'sum' ? s : mode === 'min' ? mn : mode === 'max' ? mx : s / c) * sc : NaN;
+  let lo = Infinity, hi = -Infinity, label = 0, open = false;
+  let os, oc, omn, omx, ss, sn, smn, smx;
+  const reset = () => { os = oc = ss = sn = 0; omn = smn = Infinity; omx = smx = -Infinity; };
+  const flush = () => { T[m] = label; O[m] = pick(os, oc, omn, omx); S[m] = pick(ss, sn, smn, smx); m++; };
+  for (let i = i0; i <= i1; i++){
+    const t = d.start + i * STEP;
+    if (t < lo || t >= hi){ if (open) flush(); [lo, hi, label] = bucketAt(t, cal); reset(); open = true; }
+    const o = d.obs[i], v = d.sim[i];
+    if (o === o){ os += o; oc++; if (o < omn) omn = o; if (o > omx) omx = o; }
+    if (v === v){ ss += v; sn++; if (v < smn) smn = v; if (v > smx) smx = v; }
+  }
+  if (open) flush();
+  return { T, O, S, m };
 }
 
-function aggregateSeries(rows, start, end){
-  const groups = new Map();
-  const scale = unitScale();
-
-  rows.forEach(d => {
-    const t = Date.parse(d.timestamp);
-    const v = Number(d.flow_m3s);
-    if (!Number.isFinite(t) || !Number.isFinite(v) || t < start || t > end) return;
-
-    const bucket = roundTimestamp(t);
-    if (!groups.has(bucket)) groups.set(bucket, []);
-    groups.get(bucket).push(v * scale);
-  });
-
-  return [...groups.entries()]
-    .sort((a,b) => a[0] - b[0])
-    .map(([t, values]) => {
-      let value;
-      if (state.agg === 'min') value = Math.min(...values);
-      else if (state.agg === 'max') value = Math.max(...values);
-      else if (state.agg === 'sum') value = values.reduce((a,b) => a+b, 0);
-      else value = values.reduce((a,b) => a+b, 0) / values.length;
-      return { t, value };
-    });
+/* Min/max decimation: each of MAX_BUCKETS index-buckets keeps its true min and max point
+   (in time order), so peaks/lows are never lost. Windows with few points are drawn in full. */
+function decimate(T, V, m){
+  const x = [], y = [], add = i => { x.push(T[i]); y.push(V[i]); };
+  if (m <= MAX_BUCKETS * 2){ for (let i = 0; i < m; i++) if (V[i] === V[i]) add(i); return { x, y }; }
+  const per = m / MAX_BUCKETS;
+  for (let b = 0; b < MAX_BUCKETS; b++){
+    const a = Math.floor(b * per), e = Math.min(m, Math.floor((b + 1) * per));
+    let lo = -1, hi = -1, vl = Infinity, vh = -Infinity;
+    for (let i = a; i < e; i++){
+      const v = V[i]; if (v !== v) continue;
+      if (v < vl){ vl = v; lo = i; }
+      if (v > vh){ vh = v; hi = i; }
+    }
+    if (lo < 0) continue;
+    if (lo === hi) add(lo); else if (lo < hi){ add(lo); add(hi); } else { add(hi); add(lo); }
+  }
+  return { x, y };
 }
 
-function aggregatePairedData(data){
-  const start = state.dateStartMs;
-  const end = state.dateEndMs;
-  if (start === null || end === null) return { observed: [], simulated: [] };
+/* Metrics use the FULL aggregated window (not the decimated line). */
+function computeMetrics(O, S, m){
+  let n = 0, so = 0, ss = 0;
+  for (let i = 0; i < m; i++) if (O[i] === O[i] && S[i] === S[i]){ n++; so += O[i]; ss += S[i]; }
+  if (n < 2) return { NSE: NaN, KGE: NaN, PBIAS: NaN, RMSE: NaN };
+  const mo = so / n, ms = ss / n;
+  let sse = 0, vo = 0, vs = 0, cov = 0;
+  for (let i = 0; i < m; i++){
+    if (!(O[i] === O[i] && S[i] === S[i])) continue;
+    const e = S[i] - O[i], a = O[i] - mo, b = S[i] - ms;
+    sse += e * e; vo += a * a; vs += b * b; cov += a * b;
+  }
+  const r = (vo > 0 && vs > 0) ? cov / Math.sqrt(vo * vs) : NaN;
+  const alpha = vo > 0 ? Math.sqrt(vs / n) / Math.sqrt(vo / n) : NaN;
+  const beta = mo !== 0 ? ms / mo : NaN;
+  const kge = (Number.isFinite(r) && Number.isFinite(alpha) && Number.isFinite(beta))
+    ? 1 - Math.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2) : NaN;
   return {
-    observed: aggregateSeries(data.observed, start, end),
-    simulated: aggregateSeries(data.simulated, start, end)
+    NSE: vo > 0 ? 1 - sse / vo : NaN, KGE: kge,
+    PBIAS: so !== 0 ? 100 * (so - ss) / so : NaN, RMSE: Math.sqrt(sse / n)
   };
 }
 
-/* ---- metrics: pulled out of the render function so it can feed the
-   in-chart annotation directly ---- */
-function pearsonCorrelation(a, b){
-  const n = a.length;
-  if (n < 2) return NaN;
-  const ma = a.reduce((x,y) => x+y, 0) / n;
-  const mb = b.reduce((x,y) => x+y, 0) / n;
-  let num = 0, da = 0, db = 0;
-  for (let i=0; i<n; i++){
-    const xa = a[i] - ma, xb = b[i] - mb;
-    num += xa * xb; da += xa * xa; db += xb * xb;
-  }
-  return (da > 0 && db > 0) ? num / Math.sqrt(da * db) : NaN;
-}
-
-function computeMetrics(aggregated){
-  const pairs = [];
-  const simByTime = new Map(aggregated.simulated.map(d => [d.t, d.value]));
-  aggregated.observed.forEach(d => {
-    if (simByTime.has(d.t)) pairs.push([d.value, simByTime.get(d.t)]);
-  });
-
-  if (pairs.length < 2) return { NSE: NaN, KGE: NaN, PBIAS: NaN, RMSE: NaN };
-
-  const obs = pairs.map(p => p[0]);
-  const sim = pairs.map(p => p[1]);
-  const meanObs = obs.reduce((a,b) => a+b, 0) / obs.length;
-  const meanSim = sim.reduce((a,b) => a+b, 0) / sim.length;
-  const sse = obs.reduce((sum, o, i) => sum + (sim[i] - o) ** 2, 0);
-  const varianceObs = obs.reduce((sum, o) => sum + (o - meanObs) ** 2, 0);
-  const rmse = Math.sqrt(sse / obs.length);
-  const nse = varianceObs > 0 ? 1 - sse / varianceObs : NaN;
-  const r = pearsonCorrelation(obs, sim);
-  const sdObs = Math.sqrt(obs.reduce((sum,o) => sum + (o-meanObs)**2, 0) / obs.length);
-  const sdSim = Math.sqrt(sim.reduce((sum,x) => sum + (x-meanSim)**2, 0) / sim.length);
-  const alpha = sdObs > 0 ? sdSim / sdObs : NaN;
-  const beta = meanObs !== 0 ? meanSim / meanObs : NaN;
-  const kge = Number.isFinite(r) && Number.isFinite(alpha) && Number.isFinite(beta)
-    ? 1 - Math.sqrt((r-1)**2 + (alpha-1)**2 + (beta-1)**2) : NaN;
-  const obsSum = obs.reduce((sum,o) => sum + o, 0);
-  const simSum = sim.reduce((sum,x) => sum + x, 0);
-  const pbias = obsSum !== 0 ? 100 * (obsSum - simSum) / obsSum : NaN;
-
-  return { NSE: nse, KGE: kge, PBIAS: pbias, RMSE: rmse };
-}
-
+/* renderTimeseries keeps its old signature; calls are coalesced to one draw per frame,
+   so dragging the date slider never queues up redundant redraws. */
+let tsPending = null, tsRaf = 0;
 function renderTimeseries(data, basin){
+  tsPending = [data, basin];
+  if (tsRaf) return;
+  tsRaf = requestAnimationFrame(() => {
+    tsRaf = 0;
+    const p = tsPending; tsPending = null;
+    if (p) drawTimeseries(p[0], p[1]);
+  });
+}
+
+function drawTimeseries(data, basin){
+  if (basin.gage !== state.selectedBasin || state.dateStartMs === null) return;
   const chartDiv = document.getElementById('timeseriesChart');
-  const emptyDiv = document.getElementById('timeseriesEmptyState');
-
+  document.getElementById('timeseriesEmptyState').style.display = 'none';
   chartDiv.style.display = 'block';
-  emptyDiv.style.display = 'none';
 
-  const aggregated = aggregatePairedData(data);
-  const unit = flowUnitLabel();
+  const a = aggregate(data), unit = flowUnitLabel();
+  const dO = decimate(a.T, a.O, a.m), dS = decimate(a.T, a.S, a.m);
   const traces = [
-    {
-      x: aggregated.observed.map(d => new Date(d.t)),
-      y: aggregated.observed.map(d => d.value),
-      mode: 'lines',
-      type: 'scattergl',
-      name: 'Observed',
+    { x: dO.x, y: dO.y, mode: 'lines', type: 'scattergl', name: 'Observed',
       line: { width: 2.0, dash: 'solid' },
-      hovertemplate: `Observed<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
-    },
-    {
-      x: aggregated.simulated.map(d => new Date(d.t)),
-      y: aggregated.simulated.map(d => d.value),
-      mode: 'lines',
-      type: 'scattergl',
-      name: 'Simulated',
+      hovertemplate: `Observed<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>` },
+    { x: dS.x, y: dS.y, mode: 'lines', type: 'scattergl', name: 'Simulated',
       line: { width: 1.25, dash: 'dash' },
-      hovertemplate: `Simulated<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
-    }
+      hovertemplate: `Simulated<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>` }
   ];
 
-  const metrics = computeMetrics(aggregated);
-  const fmt = (m) => {
-    const v = metrics[m];
-    const text = Number.isFinite(v) ? (m === 'PBIAS' ? `${v.toFixed(3)}%` : v.toFixed(4)) : '—';
-    return m === state.metric ? `<b>${m}  ${text}</b>` : `${m}  ${text}`;
+  const metrics = computeMetrics(a.O, a.S, a.m);
+  const fmt = (k) => {
+    const v = metrics[k];
+    const text = Number.isFinite(v) ? (k === 'PBIAS' ? `${v.toFixed(3)}%` : v.toFixed(4)) : '—';
+    return k === state.metric ? `<b>${k}  ${text}</b>` : `${k}  ${text}`;
   };
-  const annotationText = METRICS.map(fmt).join('<br>');
 
   const layout = {
     margin: { l: 65, r: 20, t: 45, b: 55 },
-    title: {
-      text: `${basin.name} — Gage ${basin.gage}`,
-      x: 0.02,
-      xanchor: 'left',
-      font: { size: 14 }
-    },
-    xaxis: {
-      title: 'Time',
-      type: 'date',
-      gridcolor: '#D9DED2',
-      range: state.dateStartMs !== null && state.dateEndMs !== null
-        ? [new Date(state.dateStartMs), new Date(state.dateEndMs)]
-        : undefined
-    },
-    yaxis: {
-      title: `Flow (${unit})`,
-      gridcolor: '#D9DED2',
-      rangemode: 'tozero'
-    },
-    legend: {
-      orientation: 'h',
-      x: 1,
-      xanchor: 'right',
-      y: 1.08,
-      yanchor: 'bottom'
-    },
+    title: { text: `${basin.name} — Gage ${basin.gage}`, x: 0.02, xanchor: 'left', font: { size: 14 } },
+    xaxis: { title: 'Time', type: 'date', gridcolor: '#D9DED2', range: [state.dateStartMs, state.dateEndMs] },
+    yaxis: { title: `Flow (${unit})`, gridcolor: '#D9DED2', rangemode: 'tozero' },
+    legend: { orientation: 'h', x: 1, xanchor: 'right', y: 1.08, yanchor: 'bottom' },
     hovermode: 'x unified',
     plot_bgcolor: '#E7E9E2',
     paper_bgcolor: 'rgba(0,0,0,0)',
-    annotations: state.showMetricsBox ? [
-      {
-        xref: 'paper', yref: 'paper',
-        x: 0.015, y: 0.02,
-        xanchor: 'left', yanchor: 'bottom',
-        align: 'left',
-        showarrow: false,
-        bgcolor: 'rgba(237,239,233,0.92)',
-        bordercolor: '#C7CDBF',
-        borderwidth: 1,
-        borderpad: 8,
-        font: { family: 'ui-monospace, monospace', size: 11, color: '#202B26' },
-        text: annotationText
-      }
-    ] : []
+    annotations: state.showMetricsBox ? [{
+      xref: 'paper', yref: 'paper', x: 0.015, y: 0.02, xanchor: 'left', yanchor: 'bottom',
+      align: 'left', showarrow: false, bgcolor: 'rgba(237,239,233,0.92)',
+      bordercolor: '#C7CDBF', borderwidth: 1, borderpad: 8,
+      font: { family: 'ui-monospace, monospace', size: 11, color: '#202B26' },
+      text: METRICS.map(fmt).join('<br>')
+    }] : []
   };
-
-  if (!timeseriesInitialized){
-    Plotly.newPlot(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
-    timeseriesInitialized = true;
-  } else {
-    Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
-  }
+  Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+  timeseriesInitialized = true;
 }
 
 /* ==================================================================
-   MONTHLY CLIMATOLOGY (top-right)
-   Static: driven only by basin selection + unit toggle, never by the
-   resolution slider or date-range picker. Always uses the full native
-   15-minute record for both observed and simulated series.
+   MONTHLY CLIMATOLOGY — precomputed in data/clim.json (m^3/s); only unit scaling here.
    ================================================================== */
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-function monthlyClimatology(rows){
-  const scale = unitScale();
-  const sums = new Array(12).fill(0);
-  const counts = new Array(12).fill(0);
-
-  rows.forEach(d => {
-    const t = Date.parse(d.timestamp);
-    const v = Number(d.flow_m3s);
-    if (!Number.isFinite(t) || !Number.isFinite(v)) return;
-    const m = new Date(t).getMonth();
-    sums[m] += v * scale;
-    counts[m] += 1;
-  });
-
-  return sums.map((s, i) => counts[i] ? s / counts[i] : null);
-}
 
 function renderClimatology(data, basin){
   const chartDiv = document.getElementById('climChart');
   const emptyDiv = document.getElementById('climEmptyState');
-  chartDiv.style.display = 'block';
-  emptyDiv.style.display = 'none';
-
-  const unit = flowUnitLabel();
-  const obsMonthly = monthlyClimatology(data.observed);
-  const simMonthly = monthlyClimatology(data.simulated);
+  const c = CLIM && CLIM[basin.gage];
+  if (!c){
+    chartDiv.style.display = 'none'; emptyDiv.style.display = 'flex';
+    emptyDiv.innerHTML = `<div class="inner"><p>No climatology for gage ${basin.gage} (check data/clim.json).</p></div>`;
+    return;
+  }
+  chartDiv.style.display = 'block'; emptyDiv.style.display = 'none';
+  const unit = flowUnitLabel(), sc = unitScale();
+  const f = arr => arr.map(v => v == null ? null : v * sc);
 
   const traces = [
-    // Observed drawn first (back layer): slightly heavier, solid line — matches
-    // the streamflow chart's Observed styling.
-    {
-      x: MONTH_NAMES, y: obsMonthly,
-      mode: 'lines+markers', type: 'scatter', name: 'Observed',
-      line: { width: 2.4, dash: 'solid', color: '#1C6E78' },
-      marker: { size: 6, color: '#1C6E78' },
-      hovertemplate: `Observed<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
-    },
-    // Simulated drawn second (front layer): slightly thinner, dashed line.
-    {
-      x: MONTH_NAMES, y: simMonthly,
-      mode: 'lines+markers', type: 'scatter', name: 'Simulated',
-      line: { width: 1.6, dash: 'dash', color: '#B9862E' },
-      marker: { size: 5, color: '#B9862E', symbol: 'diamond' },
-      hovertemplate: `Simulated<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>`
-    }
+    { x: MONTH_NAMES, y: f(c.obs), mode: 'lines+markers', type: 'scatter', name: 'Observed',
+      line: { width: 2.4, dash: 'solid', color: '#1C6E78' }, marker: { size: 6, color: '#1C6E78' },
+      hovertemplate: `Observed<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>` },
+    { x: MONTH_NAMES, y: f(c.sim), mode: 'lines+markers', type: 'scatter', name: 'Simulated',
+      line: { width: 1.6, dash: 'dash', color: '#B9862E' }, marker: { size: 5, color: '#B9862E', symbol: 'diamond' },
+      hovertemplate: `Simulated<br>%{x}<br>%{y:.4f} ${unit}<extra></extra>` }
   ];
-
   const layout = {
     margin: { l: 65, r: 20, t: 45, b: 45 },
-    title: {
-      text: `${basin.name} — full-record monthly mean`,
-      x: 0.02,
-      xanchor: 'left',
-      font: { size: 14 }
-    },
+    title: { text: `${basin.name} — full-record monthly mean`, x: 0.02, xanchor: 'left', font: { size: 14 } },
     xaxis: { title: 'Month', gridcolor: '#D9DED2' },
     yaxis: { title: `Mean flow (${unit})`, gridcolor: '#D9DED2', rangemode: 'tozero' },
     legend: { orientation: 'h', x: 1, xanchor: 'right', y: 1.08, yanchor: 'bottom' },
@@ -1881,13 +1716,8 @@ function renderClimatology(data, basin){
     plot_bgcolor: '#E7E9E2',
     paper_bgcolor: 'rgba(0,0,0,0)'
   };
-
-  if (!climatologyInitialized){
-    Plotly.newPlot(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
-    climatologyInitialized = true;
-  } else {
-    Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
-  }
+  Plotly.react(chartDiv, traces, layout, { displayModeBar: false, responsive: true });
+  climatologyInitialized = true;
 }
 
 async function loadAndRenderTimeseries(){
@@ -1895,56 +1725,38 @@ async function loadAndRenderTimeseries(){
   const tsEmpty = document.getElementById('timeseriesEmptyState');
   const climChart = document.getElementById('climChart');
   const climEmpty = document.getElementById('climEmptyState');
+  const tok = ++loadToken;
 
   if (!state.selectedBasin){
-    tsChart.style.display = 'none';
-    tsEmpty.style.display = 'flex';
-    climChart.style.display = 'none';
-    climEmpty.style.display = 'flex';
+    if (timeseriesInitialized){ Plotly.purge(tsChart); timeseriesInitialized = false; }
+    if (climatologyInitialized){ Plotly.purge(climChart); climatologyInitialized = false; }
+    tsChart.style.display = 'none'; tsEmpty.style.display = 'flex';
+    climChart.style.display = 'none'; climEmpty.style.display = 'flex';
     return;
   }
-
   const basin = BASINS.find(b => b.gage === state.selectedBasin);
   if (!basin) return;
 
-  tsChart.style.display = 'block';
-  tsEmpty.style.display = 'none';
-  climChart.style.display = 'block';
-  climEmpty.style.display = 'none';
-
-  timeseriesInitialized = false; 
-  climatologyInitialized = false;
-
   try {
-    const data = await loadTimeseriesForGage(basin.gage);
-
-    if (state.selectedBasin !== basin.gage) return;
-
+    const [data, clim] = await Promise.all([loadTimeseriesForGage(basin.gage), CLIM_P]);
+    if (tok !== loadToken) return;                 // a newer selection superseded this one
+    CLIM = clim;
     setDateRangeControls(data, true);
     renderTimeseries(data, basin);
     renderClimatology(data, basin);
   } catch (err) {
+    if (tok !== loadToken) return;
     console.error(err);
-    tsChart.style.display = 'none';
-    climChart.style.display = 'none';
-    tsEmpty.style.display = 'flex';
-    climEmpty.style.display = 'flex';
+    tsChart.style.display = 'none'; climChart.style.display = 'none';
+    tsEmpty.style.display = 'flex'; climEmpty.style.display = 'flex';
     const message = err.noData
       ? `<div class="inner"><p>currently no streamflow data for gage ${basin.gage}</p></div>`
-      : `
-      <div class="inner">
-        <p style="color:#A6432B">Failed to load streamflow data.</p>
-        <p class="small">${err.message}</p>
-      </div>`;
+      : `<div class="inner"><p style="color:#A6432B">Failed to load streamflow data.</p><p class="small">${err.message}</p></div>`;
     tsEmpty.innerHTML = message;
     climEmpty.innerHTML = message;
   }
 }
 
-/* ==================================================================
-   RESOLUTION — slider presets + datetime duration input
-   Affects the streamflow chart only.
-   ================================================================== */
 const resolutionSlider = document.getElementById('resolutionSlider');
 const resolutionDurationLabel = document.getElementById('resolutionDurationLabel');
 const resolutionFields = {
@@ -2094,7 +1906,7 @@ function setDateFromText(which){
   if (!bounds) return;
 
   const input = which === 'start' ? dateStartValue : dateEndValue;
-  const parsed = Date.parse(input.value);
+  const parsed = Date.parse(input.value + 'Z');
   if (!Number.isFinite(parsed) || parsed < bounds.min || parsed > bounds.max) {
     input.value = formatDateTimeLocal(which === 'start' ? state.dateStartMs : state.dateEndMs);
     return;
